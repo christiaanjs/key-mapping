@@ -35,7 +35,9 @@ jobs:
         run: go build ./...
 
       - name: Build (wasm web target)
-        run: GOOS=js GOARCH=wasm go build ./cmd/web
+        # -o is required: a bare `go build ./cmd/web` emits a binary named "web",
+        # which collides with the existing web/ assets directory.
+        run: GOOS=js GOARCH=wasm go build -o web/app.wasm ./cmd/web
 
       - name: Test
         run: go test ./...
