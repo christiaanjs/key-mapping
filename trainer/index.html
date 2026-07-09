@@ -1,0 +1,258 @@
+<h2 class="sr-only">Half-QWERTY passthrough trainer with an expanded word bank and full-sentence practice mode</h2>
+<div style="padding: 0.5rem 0;">
+
+<div style="display:flex; gap:8px; margin-bottom:1.25rem; flex-wrap:wrap;">
+  <button id="tab-mirror" class="tabbtn" style="flex:1; min-width:120px;">Mirror typing</button>
+  <button id="tab-nav" class="tabbtn" style="flex:1; min-width:120px;">Nav layer</button>
+  <button id="tab-pad" class="tabbtn" style="flex:1; min-width:120px;">Scratchpad</button>
+  <button id="tab-ref" class="tabbtn" style="flex:1; min-width:120px;">Reference</button>
+</div>
+
+<div id="stage" style="min-height:380px;"></div>
+
+</div>
+
+<style>
+.tabbtn { font-size:14px; padding:8px 12px; border-radius:var(--radius); border:0.5px solid var(--border-strong); background:transparent; color:var(--text-secondary); cursor:pointer; }
+.tabbtn.active { background:var(--bg-accent); color:var(--text-accent); border-color:var(--border-accent); font-weight:500; }
+.chip { font-size:13px; padding:5px 10px; border-radius:var(--radius); border:0.5px solid var(--border-strong); background:transparent; color:var(--text-secondary); cursor:pointer; }
+.chip.active { background:var(--bg-accent); color:var(--text-accent); border-color:var(--border-accent); font-weight:500; }
+.keycap { display:inline-flex; align-items:center; justify-content:center; min-width:34px; height:34px; padding:0 6px; border-radius:6px; border:0.5px solid var(--border-strong); background:var(--surface-2); font-family:var(--font-mono); font-size:13px; color:var(--text-primary); }
+.keycap.lit { background:var(--bg-accent); border-color:var(--border-accent); color:var(--text-accent); font-weight:500; }
+.statcard { background:var(--surface-1); border-radius:var(--radius); padding:0.75rem 1rem; }
+.statlabel { font-size:13px; color:var(--text-secondary); margin:0; }
+.statval { font-size:24px; font-weight:500; margin:0; }
+.prompt-word { font-family:var(--font-mono); font-size:22px; letter-spacing:2px; }
+.sentence { font-family:var(--font-mono); font-size:19px; line-height:1.8; letter-spacing:1px; }
+.capture { width:100%; box-sizing:border-box; font-family:var(--font-mono); font-size:16px; margin-top:4px; }
+.hint { font-size:14px; min-height:22px; margin:8px 0 0; }
+</style>
+
+<script>
+(function(){
+  const stage = document.getElementById('stage');
+
+  const MIRROR = {
+    q:'p', w:'o', e:'i', r:'u', t:'y',
+    a:';', s:'l', d:'k', f:'j', g:'h',
+    z:'/', x:'.', c:',', v:'m', b:'n',
+    '1':'0','2':'9','3':'8','4':'7','5':'6'
+  };
+  const LEFT_KEYS = Object.keys(MIRROR);
+  const OUT_TO_LEFT = {}; Object.entries(MIRROR).forEach(([k,v])=>OUT_TO_LEFT[v]=k);
+  // space char: pressing spacebar alone (tap) types a space
+  function routeFor(ch){
+    if(ch===' ') return {key:'space', space:false, isSpace:true};
+    if(LEFT_KEYS.includes(ch)) return {key:ch, space:false};
+    if(OUT_TO_LEFT[ch]!==undefined) return {key:OUT_TO_LEFT[ch], space:true};
+    return null; // punctuation/uppercase we don't map -> skip in generator
+  }
+  function diagnose(T, R){
+    if(T===' ') return `Expected a space — tap the spacebar (don't hold).`;
+    const rt=routeFor(T);
+    if(!rt) return `"${T}" isn't in the map.`;
+    if(MIRROR[R]===T) return `You typed "${R}" without space. Hold space + "${R}" → "${T}".`;
+    if(rt.space===false && MIRROR[T]===R) return `You held space (got "${R}"). Release space, press "${T}".`;
+    if(rt.space===true && OUT_TO_LEFT[R]!==undefined) return `You did space + "${OUT_TO_LEFT[R]}" (→ "${R}"). Need space + "${rt.key}" (→ "${T}").`;
+    return `Got "${R}". For "${T}" press ${rt.space?'space + ':''}"${rt.key}".`;
+  }
+
+  // --- Expanded word bank ---
+  const RAW = ("the be to of and a in that have it for not on with he as you do at this but his by from they we say her she or an will my one all would there their what so up out if about who get which go me when make can like time no just him know take people into year your good some could them see other than then now look only come over think back after use two how work first well way even want because these give day most water long very find here thing great little world still hand high right small large next early young important few public bad same able story mind party music course between country problem hour game line end member law car city community name president team minute idea body information nothing money result change morning reason research girl guy moment air teacher force education plan door number wall paper number able wide door left home moment food heart night true friend fact street table light front rather learn need feel become leave nature better school white house sound wind field paint drink dance simple happy quiet build sleep table plant water river green brown black round sharp smart clean quick brave clear fresh sweet bread cream stone metal glass color voice space light music dream heart peace world value trust honor pride craft skill trade grade grace price prize drive alive olive plane plate stage stone smoke flame frame shade share stare spare spice slice pride bride guide slide glide chase phase phrase praise") .split(/\s+/);
+  const WORDS = Array.from(new Set(RAW.filter(w=>/^[a-z]+$/.test(w))));
+
+  // --- Sentence bank: only chars we can map (a-z + space), lowercase, no punctuation needing shift ---
+  const SENTENCES = [
+    "the quick brown fox jumps over the lazy dog",
+    "she sells sea shells by the shore each day",
+    "we should leave before the rain starts again",
+    "a little practice every morning goes a long way",
+    "the old house stood quiet at the end of the lane",
+    "they found the missing key under the front door mat",
+    "good work takes time patience and a clear mind",
+    "the river runs slow past the green fields of home",
+    "he wrote a short note and left it on the table",
+    "learning a new layout feels strange at first",
+    "keep your hands relaxed and let the words flow",
+    "the best way to improve is to type a little each day",
+    "bright stars filled the sky above the sleeping town",
+    "she paints the walls a warm shade of soft yellow",
+    "we walked along the beach and watched the waves roll in",
+    "a strong cup of coffee helps me start the day right",
+    "the plan was simple but the work proved much harder",
+    "trust takes years to build and moments to break",
+    "the small dog ran across the yard chasing a ball",
+    "clear skies and a cool breeze made for a fine day"
+  ];
+
+  let mode='words'; // words | sentences
+  let lenMode='any';
+  function wordPool(){
+    if(lenMode==='short') return WORDS.filter(w=>w.length<=4);
+    if(lenMode==='long') return WORDS.filter(w=>w.length>=6);
+    return WORDS;
+  }
+  function pickWord(){ const p=wordPool(); return p[Math.floor(Math.random()*p.length)]; }
+  function pickSentence(){ return SENTENCES[Math.floor(Math.random()*SENTENCES.length)]; }
+
+  let tab='mirror';
+  const tabs=['mirror','nav','pad','ref'];
+  function setTab(t){ tab=t; tabs.forEach(x=>document.getElementById('tab-'+x).classList.toggle('active',x===t)); render(); }
+  tabs.forEach(x=>document.getElementById('tab-'+x).addEventListener('click',()=>setTab(x)));
+
+  // ---- Drill state (shared for words & sentences; target is a string) ----
+  let d=null;
+  function initDrill(keepStats){
+    const prev = keepStats && d ? {hits:d.hits,misses:d.misses,start:d.start} : {hits:0,misses:0,start:null};
+    const text = mode==='sentences' ? pickSentence() : pickWord();
+    d={ text, idx:0, hits:prev.hits, misses:prev.misses, start:prev.start };
+  }
+  function currentTargetChar(){ return d.text[d.idx] || null; }
+
+  function renderDrill(){
+    if(!d) initDrill(false);
+    const target=currentTargetChar();
+    const rt=target?routeFor(target):null;
+    const isSentence = mode==='sentences';
+    const elapsed = d.start ? (Date.now()-d.start)/1000 : 0;
+    const typedChars = d.idx;
+    const wpm = elapsed>0 ? Math.round((typedChars/5)/(elapsed/60)) : 0;
+
+    const textHtml = d.text.split('').map((ch,i)=>{
+      const disp = ch===' ' ? '·' : ch;
+      const col = i<d.idx?'var(--text-success)':i===d.idx?'var(--text-accent)':'var(--text-muted)';
+      const ul = i===d.idx?'text-decoration:underline;':'';
+      const sp = ch===' ' ? 'opacity:0.5;' : '';
+      return `<span style="color:${col};${ul}${sp}">${disp}</span>`;
+    }).join('');
+
+    let nextHint;
+    if(!target){ nextHint=`<p style="font-size:13px; color:var(--text-success); margin:0;">Complete!</p>`; }
+    else if(rt && rt.isSpace){ nextHint=`<p style="font-size:13px; color:var(--text-secondary); margin:0;">Next: <strong>space</strong> — tap the <span class="keycap" style="min-width:60px">spacebar</span></p>`; }
+    else if(rt){ nextHint=`<p style="font-size:13px; color:var(--text-secondary); margin:0;">Next: <strong>${target}</strong> — press ${rt.space?'<strong>space + </strong>':''}<span class="keycap lit">${rt.key}</span></p>`; }
+    else { nextHint=`<p style="font-size:13px; color:var(--text-muted); margin:0;">skipping unsupported char…</p>`; }
+
+    stage.innerHTML=`
+      <div style="display:flex; gap:6px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
+        <button class="chip ${mode==='words'?'active':''}" data-mode="words">words</button>
+        <button class="chip ${mode==='sentences'?'active':''}" data-mode="sentences">sentences</button>
+        ${mode==='words'?`
+          <span style="width:1px;height:20px;background:var(--border-strong);margin:0 4px;"></span>
+          <button class="chip ${lenMode==='short'?'active':''}" data-len="short">short</button>
+          <button class="chip ${lenMode==='any'?'active':''}" data-len="any">any</button>
+          <button class="chip ${lenMode==='long'?'active':''}" data-len="long">long</button>`:''}
+        <button class="chip" id="skip" style="margin-left:auto;">skip →</button>
+      </div>
+      <p style="font-size:14px; color:var(--text-secondary); margin:0 0 8px;">Karabiner ON. Type ${isSentence?'the sentence':'the word'} left-handed; the field shows what actually arrives. <span style="color:var(--text-muted)">(· = space)</span></p>
+      <div style="background:var(--surface-1); border-radius:12px; padding:1.25rem; margin:0 0 1rem;">
+        <p class="${isSentence?'sentence':'prompt-word'}" style="margin:0 0 12px;">${textHtml}</p>
+        ${nextHint}
+        <input id="cap" class="capture" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="type here…" />
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px;">
+        <div class="statcard"><p class="statlabel">Correct</p><p class="statval" style="color:var(--text-success)">${d.hits}</p></div>
+        <div class="statcard"><p class="statlabel">Misses</p><p class="statval" style="color:var(--text-danger)">${d.misses}</p></div>
+        <div class="statcard"><p class="statlabel">Accuracy</p><p class="statval">${d.hits+d.misses?Math.round(d.hits/(d.hits+d.misses)*100):100}%</p></div>
+        <div class="statcard"><p class="statlabel">WPM</p><p class="statval">${wpm||'—'}</p></div>
+      </div>
+      <p id="fb" class="hint" style="color:var(--text-secondary);"></p>`;
+
+    stage.querySelectorAll('.chip[data-mode]').forEach(b=>b.addEventListener('click',()=>{ mode=b.dataset.mode; initDrill(true); d.start=null; renderDrill(); }));
+    stage.querySelectorAll('.chip[data-len]').forEach(b=>b.addEventListener('click',()=>{ lenMode=b.dataset.len; initDrill(true); renderDrill(); }));
+    const sk=document.getElementById('skip'); if(sk) sk.addEventListener('click',()=>{ initDrill(true); renderDrill(); });
+    const cap=document.getElementById('cap'); cap.focus(); cap.addEventListener('input', onInput);
+  }
+
+  function onInput(e){
+    const cap=e.target; const val=cap.value; if(!val) return;
+    const R=val[val.length-1]; cap.value='';
+    if(!d) return;
+    // skip any unsupported target chars automatically
+    while(currentTargetChar() && !routeFor(currentTargetChar())) d.idx++;
+    const target=currentTargetChar();
+    if(!target) return;
+    if(!d.start) d.start=Date.now();
+    if(R===target){
+      d.idx++; d.hits++;
+      while(currentTargetChar() && !routeFor(currentTargetChar())) d.idx++;
+      if(!currentTargetChar()){
+        renderDrill(); const f=document.getElementById('fb'); if(f){ f.textContent = mode==='sentences'?'Sentence done! Next loading…':'Word complete! Next loading…'; f.style.color='var(--text-success)'; }
+        setTimeout(()=>{ initDrill(true); d.start=null; renderDrill(); }, 900); return;
+      }
+      renderDrill();
+    } else {
+      d.misses++; renderDrill();
+      const f=document.getElementById('fb'); if(f){ f.textContent=diagnose(target,R); f.style.color='var(--text-danger)'; }
+    }
+  }
+
+  // ---- Nav ----
+  let nState=null;
+  function initNav(){ const seq=Array.from({length:6},()=>['←','↓','↑','→'][Math.floor(Math.random()*4)]); nState={seq,idx:0,hits:0,misses:0}; }
+  const ARROW={ArrowLeft:'←',ArrowDown:'↓',ArrowUp:'↑',ArrowRight:'→'};
+  function renderNav(){
+    if(!nState) initNav();
+    stage.innerHTML=`
+      <p style="font-size:14px; color:var(--text-secondary); margin:0 0 12px;">Karabiner ON. Hold <span class="keycap">b</span> (no space), tap <span class="keycap">a</span> <span class="keycap">s</span> <span class="keycap">d</span> <span class="keycap">f</span> — widget reads the real arrows.</p>
+      <div style="background:var(--surface-1); border-radius:12px; padding:1.25rem; margin:0 0 1rem; text-align:center;" tabindex="0" id="navfocus">
+        <p style="font-size:13px; color:var(--text-secondary); margin:0 0 8px;">click here, then navigate</p>
+        <p style="font-size:32px; letter-spacing:10px; margin:0;">${nState.seq.map((dd,i)=>`<span style="${i<nState.idx?'color:var(--text-success)':i===nState.idx?'color:var(--text-accent)':'color:var(--text-muted)'}">${dd}</span>`).join('')}</p>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:12px;">
+        <div class="statcard"><p class="statlabel">Correct</p><p class="statval" style="color:var(--text-success)">${nState.hits}</p></div>
+        <div class="statcard"><p class="statlabel">Misses</p><p class="statval" style="color:var(--text-danger)">${nState.misses}</p></div>
+        <div class="statcard"><p class="statlabel">Progress</p><p class="statval">${nState.idx}/${nState.seq.length}</p></div>
+      </div>
+      <p id="nfb" class="hint" style="color:var(--text-secondary);"></p>`;
+    document.getElementById('navfocus').focus();
+  }
+  function onNavKey(e){
+    if(tab!=='nav'||!nState) return;
+    const dir=ARROW[e.key]; if(!dir) return; e.preventDefault();
+    const want=nState.seq[nState.idx]; const fb=document.getElementById('nfb');
+    if(dir===want){ nState.idx++; nState.hits++; if(fb)fb.textContent=''; if(nState.idx>=nState.seq.length){ setTimeout(()=>{initNav();renderNav();},700); return; } }
+    else { nState.misses++; if(fb){ fb.textContent=`Got ${dir}, wanted ${want}. (a=← s=↓ d=↑ f=→)`; fb.style.color='var(--text-danger)'; } }
+    renderNav();
+  }
+
+  // ---- Scratchpad ----
+  function renderPad(){
+    stage.innerHTML=`
+      <p style="font-size:14px; color:var(--text-secondary); margin:0 0 12px;">Free practice with Karabiner live — mirror, arrows, delete, all as your config produces them.</p>
+      <textarea id="padta" class="capture" style="min-height:200px; resize:vertical; line-height:1.6;" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Hold space to mirror. Hold b (no space) + asdf for arrows. caps=return, tab=delete…"></textarea>
+      <p class="hint" style="color:var(--text-muted);">Real text field — what you see is your actual keymap output.</p>`;
+    document.getElementById('padta').focus();
+  }
+
+  function renderRef(){
+    const rows=LEFT_KEYS.map(k=>`<tr><td style="padding:3px 8px;font-family:var(--font-mono)"><span class="keycap">${k}</span></td><td style="padding:3px 8px;color:var(--text-secondary)">→</td><td style="padding:3px 8px;font-family:var(--font-mono);color:var(--text-accent)">${MIRROR[k]}</td></tr>`).join('');
+    stage.innerHTML=`
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem;">
+        <div>
+          <p style="font-size:14px; font-weight:500; margin:0 0 8px;">Left key + space produces</p>
+          <table style="font-size:13px; border-collapse:collapse;">${rows}</table>
+        </div>
+        <div>
+          <p style="font-size:14px; font-weight:500; margin:0 0 8px;">Layer keys</p>
+          <table style="font-size:13px; border-collapse:collapse;">
+            <tr><td style="padding:4px 8px"><span class="keycap">caps</span></td><td style="padding:4px 8px;color:var(--text-secondary)">→</td><td style="padding:4px 8px">return</td></tr>
+            <tr><td style="padding:4px 8px"><span class="keycap">tab</span></td><td style="padding:4px 8px;color:var(--text-secondary)">→</td><td style="padding:4px 8px">delete</td></tr>
+            <tr><td style="padding:4px 8px"><span class="keycap">hold b</span></td><td style="padding:4px 8px;color:var(--text-secondary)">→</td><td style="padding:4px 8px">arm nav (no space)</td></tr>
+            <tr><td style="padding:4px 8px"><span class="keycap">a s d f</span></td><td style="padding:4px 8px;color:var(--text-secondary)">→</td><td style="padding:4px 8px">← ↓ ↑ →</td></tr>
+          </table>
+          <p style="font-size:13px; color:var(--text-muted); margin:1rem 0 0;">Word mode has a larger bank with length filters. Sentence mode drills continuous text including spaces (shown as ·). WPM is live in both.</p>
+        </div>
+      </div>`;
+  }
+
+  function render(){
+    if(tab==='mirror'){ if(!d)initDrill(false); renderDrill(); }
+    else if(tab==='nav'){ if(!nState)initNav(); renderNav(); }
+    else if(tab==='pad'){ renderPad(); }
+    else renderRef();
+  }
+
+  document.addEventListener('keydown', onNavKey);
+  setTab('mirror');
+})();
+</script>

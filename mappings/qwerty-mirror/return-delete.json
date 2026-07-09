@@ -1,0 +1,35 @@
+{
+    "description": "caps_lock = return, tab = delete",
+    "manipulators": [
+        {
+            "conditions": [
+                {
+                    "name": "alt",
+                    "type": "variable_unless",
+                    "value": 1
+                }
+            ],
+            "from": {
+                "key_code": "caps_lock",
+                "modifiers": { "optional": ["any"] }
+            },
+            "to": [{ "key_code": "return_or_enter" }],
+            "type": "basic"
+        },
+        {
+            "conditions": [
+                {
+                    "name": "alt",
+                    "type": "variable_if",
+                    "value": 1
+                }
+            ],
+            "from": {
+                "key_code": "tab",
+                "modifiers": { "optional": ["any"] }
+            },
+            "to": [{ "key_code": "delete_or_backspace" }],
+            "type": "basic"
+        }
+    ]
+}
