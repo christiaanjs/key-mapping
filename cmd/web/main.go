@@ -1,3 +1,5 @@
+//go:build js && wasm
+
 // Command web is the WebAssembly entrypoint for the keymap trainer.
 //
 // It compiles with GOOS=js GOARCH=wasm and must not import Bubble Tea,
