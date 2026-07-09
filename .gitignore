@@ -30,3 +30,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Build artifacts
+/bin/
+/tui
+/app
+# WASM build outputs (produced by `make build-web`)
+web/app.wasm
+web/wasm_exec.js

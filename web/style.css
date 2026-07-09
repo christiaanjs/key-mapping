@@ -1,0 +1,316 @@
+/* Keymap Trainer — standalone dark theme.
+   The prototype (trainer/index.html) relied on CSS custom properties defined
+   by a host page (--surface-1, --text-accent, etc). This file defines its own
+   palette in that spirit so web/ is fully self-contained and offline. */
+
+:root {
+  --bg: #0e1116;
+  --surface-1: #161a22;
+  --surface-2: #1e2430;
+  --bg-accent: #1b2a3d;
+
+  --text-primary: #e6e9ef;
+  --text-secondary: #9aa4b2;
+  --text-muted: #5b6472;
+  --text-accent: #6fb8ff;
+  --text-success: #5fd88f;
+  --text-danger: #ff7a7a;
+
+  --border-strong: #2a3140;
+  --border-accent: #3a6ea8;
+
+  --radius: 10px;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  padding: 2rem 1rem 4rem;
+}
+
+.app {
+  width: 100%;
+  max-width: 720px;
+}
+
+.app h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.01em;
+}
+
+.app .subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0 0 1.5rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.tabbtn {
+  flex: 1;
+  min-width: 120px;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 0.5px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.tabbtn:hover {
+  color: var(--text-primary);
+}
+
+.tabbtn.active {
+  background: var(--bg-accent);
+  color: var(--text-accent);
+  border-color: var(--border-accent);
+  font-weight: 500;
+}
+
+/* Chips (content/length selectors) */
+.chip-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  font-size: 13px;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  border: 0.5px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.chip:hover {
+  color: var(--text-primary);
+}
+
+.chip.active {
+  background: var(--bg-accent);
+  color: var(--text-accent);
+  border-color: var(--border-accent);
+  font-weight: 500;
+}
+
+.chip-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  margin: 0 4px;
+}
+
+.chip-skip {
+  margin-left: auto;
+}
+
+/* Keycaps */
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 0.5px solid var(--border-strong);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.keycap.lit {
+  background: var(--bg-accent);
+  border-color: var(--border-accent);
+  color: var(--text-accent);
+  font-weight: 500;
+}
+
+/* Stage panels */
+.panel {
+  background: var(--surface-1);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin: 0 0 1rem;
+}
+
+.panel-note {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+}
+
+.prompt-word {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  letter-spacing: 2px;
+  margin: 0 0 12px;
+}
+
+.sentence {
+  font-family: var(--font-mono);
+  font-size: 19px;
+  line-height: 1.8;
+  letter-spacing: 1px;
+  margin: 0 0 12px;
+}
+
+.capture {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  margin-top: 4px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 0.5px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.capture:focus {
+  outline: none;
+  border-color: var(--border-accent);
+}
+
+textarea.capture {
+  min-height: 200px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.hint {
+  font-size: 14px;
+  min-height: 22px;
+  margin: 8px 0 0;
+}
+
+/* Stat grid */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.stats.stats-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.statcard {
+  background: var(--surface-1);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+}
+
+.statlabel {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.statval {
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0;
+}
+
+/* Nav mode */
+.navstage {
+  text-align: center;
+}
+
+.navseq {
+  font-size: 32px;
+  letter-spacing: 10px;
+  margin: 0;
+}
+
+/* Reference table */
+.ref-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+@media (max-width: 560px) {
+  .ref-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ref-title {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 8px;
+}
+
+.ref-table {
+  font-size: 13px;
+  border-collapse: collapse;
+}
+
+.ref-table td {
+  padding: 4px 8px;
+}
+
+.ref-arrow {
+  color: var(--text-secondary);
+}
+
+.ref-out {
+  font-family: var(--font-mono);
+  color: var(--text-accent);
+}
+
+.ref-note {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 1rem 0 0;
+}
+
+.boot-msg {
+  font-size: 13px;
+  color: var(--text-muted);
+}
