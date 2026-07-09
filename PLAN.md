@@ -2,9 +2,18 @@
 
 A phased build of the Karabiner keymap trainer and toolkit. Each phase is independently shippable and leaves the repo in a working, tested state. Phases 0–4 deliver a usable trainer; 5–7 are the roadmap extensions.
 
+## Status
+
+- ✅ **Phase 0 — Scaffolding** — done
+- ⏭️ **Phase 1 — Mapping parser** — **deferred, not skipped.** Rather than build the parser first, Phase 2 shipped a hardcoded `staticMapping` (and `staticCorpus`) *behind the `Mapping`/`Corpus` interfaces*, so the trainer runs today. Phase 1 now means: implement a parser that drops in behind the existing `Mapping` interface. This is the recommended next step.
+- ✅ **Phase 2 — Trainer core** — done (with the injected-static seam above)
+- ✅ **Phase 3 — Terminal frontend** — done
+- ✅ **Phase 4 — Web frontend** — done (vanilla JS instead of Preact; see note in that phase)
+- ⬜ **Phases 5–7** — not started
+
 Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 - The `core` package stays pure — no `os`, `syscall/js`, or Bubble Tea imports.
-- Rules come from **parsing `mappings/`**, never hardcoding (unlike `trainer/index.html`).
+- Rules ultimately come from **parsing `mappings/`** (Phase 1), never permanently hardcoded — the hardcoded `staticMapping` is a temporary stand-in behind the `Mapping` interface.
 - Keep the current left-hand layout from special-casing shared code; model layouts as data.
 
 ---
@@ -24,6 +33,8 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 
 ## Phase 1 — Mapping parser (the foundation)
 
+> **Status: ⏭️ deferred (recommended next).** The `Mapping` interface and a hardcoded `staticMapping` behind it already exist (`core/mapping.go`, `core/mapping_static.go`). This phase replaces `staticMapping` with a parser-backed implementation — no changes to the drill or frontends.
+
 **Goal:** turn the `mappings/` directory into a normalized, queryable model. This is the piece that replaces the prototype's hardcoded `MIRROR`/`routeFor`/`diagnose`.
 
 - Model the Karabiner subset actually used: `basic` manipulators, `from`/`to` key codes, `set_variable`, `variable_if`/`variable_unless` conditions, `to_if_alone`, `to_after_key_up`.
@@ -41,6 +52,8 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 
 ## Phase 2 — Trainer core (pure logic)
 
+> **Status: ✅ done.** See `core/`. Content and mapping come from injected `Corpus`/`Mapping` interfaces; static implementations wired by `NewDefault()`.
+
 **Goal:** the rendering-agnostic `App` with `Dispatch(Event) State` / `Snapshot() State`, driven by the parsed mapping.
 
 - Define `Event` and `State` as plain data types.
@@ -57,6 +70,8 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 
 ## Phase 3 — Terminal frontend
 
+> **Status: ✅ done.** See `cmd/tui/` (Bubble Tea + Lip Gloss). Modes switch on F1–F4.
+
 **Goal:** a real playable TUI.
 
 - Bubble Tea `Model` wrapping `*core.App`; `Update` translates key msgs → `core.Event` → `Dispatch`; `View` renders `Snapshot()` with Lip Gloss.
@@ -69,6 +84,8 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 ---
 
 ## Phase 4 — Web frontend
+
+> **Status: ✅ done.** See `cmd/web/` + `web/`. Implemented with a thin **vanilla-JS** renderer (no framework/CDN/build step) instead of Preact — thinner, offline, honours the "logic in Go" principle. `cmd/web/main.go` exposes `snapshot()`/`dispatch(eventJSON)`. TinyGo not attempted (binary ~3.4 MB); revisit if size matters.
 
 **Goal:** the same core in the browser, no backend.
 
