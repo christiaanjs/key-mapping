@@ -11,6 +11,10 @@ type staticMapping struct {
 	leftKeyList []rune        // left keys in order for Reference()
 }
 
+// NewStaticMapping returns the hardcoded mapping. It is exported so frontends
+// can fall back to it when ParseMapping fails (e.g. a malformed mapping set).
+func NewStaticMapping() Mapping { return newStaticMapping() }
+
 func newStaticMapping() Mapping {
 	m := &staticMapping{
 		mirror:      make(map[rune]rune),
