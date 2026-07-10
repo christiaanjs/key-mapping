@@ -16,10 +16,18 @@ import (
 	"syscall/js"
 
 	"github.com/christiaanswanepoel/key-mapping/core"
+	"github.com/christiaanswanepoel/key-mapping/mappings"
 )
 
 func main() {
-	app := core.NewDefault()
+	// Parse the embedded default mapping set; fall back to the built-in
+	// static mapping on error. The corpus always stays static in wasm: a
+	// browser sandbox cannot reach a local Ollama server.
+	m, err := core.ParseMapping(mappings.FS, mappings.Default)
+	if err != nil {
+		m = core.NewStaticMapping()
+	}
+	app := core.New(m, core.NewStaticCorpus())
 
 	js.Global().Set("snapshot", js.FuncOf(func(_ js.Value, _ []js.Value) any {
 		return stateJSON(app.Snapshot())

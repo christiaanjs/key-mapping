@@ -25,8 +25,10 @@ type model struct {
 	width, height int
 }
 
-func newModel() model {
-	app := core.NewDefault()
+// newModel builds the Bubble Tea model around the given core.App. Callers
+// (main, tests) are responsible for constructing app with whatever mapping
+// and corpus are appropriate.
+func newModel(app *core.App) model {
 	return model{
 		app:   app,
 		state: app.Snapshot(),
