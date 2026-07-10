@@ -10,16 +10,19 @@ The current focus is a **left-hand-only layout** (Half-QWERTY: hold spacebar to 
 
 ## Current state — read this first
 
-Phases 0, 2, 3, and 4 of `PLAN.md` are built: the pure `core`, the terminal (TUI) frontend, and the web (WASM) frontend all work and are covered by CI. What each thing is:
+Phases 0–5 of `PLAN.md` are built: the pure `core` (now including the mapping parser), the terminal (TUI) frontend, the web (WASM) frontend, and the pluggable `corpus` package all work and are covered by CI. What each thing is:
 
-- `core/` — the pure trainer: `App` with `Dispatch(Event) State` / `Snapshot() State`, the four drill modes, and the `Mapping` / `Corpus` **seam interfaces**.
+- `core/` — the pure trainer: `App` with `Dispatch(Event) State` / `Snapshot() State`, the four drill modes, the `Mapping` / `Corpus` **seam interfaces**, and `ParseMapping`.
+- `corpus/` — pluggable corpus sources (static, file, codebase, Ollama). All corpus I/O (os, net/http) lives here, **outside** the pure core.
 - `cmd/tui/` — Bubble Tea + Lip Gloss frontend. `cmd/web/` + `web/` — WASM entrypoint plus a thin vanilla-JS renderer (no framework/CDN/build step).
 - `trainer/architecture.md` — the architecture this follows. `trainer/index.html` — the original **throwaway prototype**; it is the behavior/visual reference only, do not extend it.
-- `mappings/qwerty-mirror/*.json` — the **real Karabiner mapping**; see the format section below.
+- `mappings/qwerty-mirror/*.json` — the **real Karabiner mapping**; see the format section below. `mappings/mappings.go` embeds it as an `embed.FS` (wasm-safe) with `mappings.Default` = `"qwerty-mirror"`.
 
-**The mapping and corpus are still hardcoded, on purpose, behind interfaces.** `core/mapping_static.go` (`staticMapping`, built from the prototype's MIRROR table + `mappings/*.json`) implements `Mapping`; `core/corpus_static.go` (`staticCorpus`, the prototype's word/sentence bank) implements `Corpus`. `New(m Mapping, c Corpus)` injects them; `NewDefault()` wires the static ones. The drill and both frontends depend only on the interfaces.
+**The mapping is now parsed; the corpus is pluggable — both still behind the same interfaces.** `core.ParseMapping(fsys fs.FS, dir string) (Mapping, error)` (`core/mapping_parse.go`) reads `mappings/*.json` and builds a `mirrorTable` (`core/mirror_table.go`) — the same type `NewStaticMapping()` (`core/mapping_static.go`) builds, so parsed and static behave identically by construction. `core/corpus_static.go` (`staticCorpus`) and `corpus.Source` (`corpus/*.go`) both implement `Corpus`. `New(m Mapping, c Corpus)` injects them; `NewDefault()` wires the static ones. Both frontends parse the embedded mapping and (TUI) select a corpus, each falling back to the static implementation with an stderr warning on error. The drill and both frontends still depend only on the interfaces.
 
-The central next goal (Phase 1): replace `staticMapping` with an implementation that **parses the mapping files** (`mappings/` is the source of truth) — it drops in behind the existing `Mapping` interface with no change to the drill or frontends. Same pattern for `Corpus` (codebase extraction / LLM generation) in later phases.
+Remaining goals: Phase 6 (simulation/efficiency) and Phase 7 (LLM content generation, provider-flexible) — see `PLAN.md`.
+
+Key seams to preserve when extending: keep `core` pure (the parser takes an `fs.FS`, never `os`; corpus I/O stays in `corpus/`). The web frontend uses the parsed mapping + static corpus only — a browser sandbox can reach neither the filesystem nor a local Ollama server.
 
 ## Target architecture (from `trainer/architecture.md`)
 

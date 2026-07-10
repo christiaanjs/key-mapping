@@ -1,19 +1,20 @@
 # Implementation Plan
 
-A phased build of the Karabiner keymap trainer and toolkit. Each phase is independently shippable and leaves the repo in a working, tested state. Phases 0–4 deliver a usable trainer; 5–7 are the roadmap extensions.
+A phased build of the Karabiner keymap trainer and toolkit. Each phase is independently shippable and leaves the repo in a working, tested state. Phases 0–5 deliver a usable trainer with pluggable content; 6–7 are the roadmap extensions.
 
 ## Status
 
 - ✅ **Phase 0 — Scaffolding** — done
-- ⏭️ **Phase 1 — Mapping parser** — **deferred, not skipped.** Rather than build the parser first, Phase 2 shipped a hardcoded `staticMapping` (and `staticCorpus`) *behind the `Mapping`/`Corpus` interfaces*, so the trainer runs today. Phase 1 now means: implement a parser that drops in behind the existing `Mapping` interface. This is the recommended next step.
+- ✅ **Phase 1 — Mapping parser** — done. `core.ParseMapping` reads `mappings/*.json` and drops in behind the `Mapping` interface; both frontends now parse the embedded mapping (static fallback on error).
 - ✅ **Phase 2 — Trainer core** — done (with the injected-static seam above)
 - ✅ **Phase 3 — Terminal frontend** — done
 - ✅ **Phase 4 — Web frontend** — done (vanilla JS instead of Preact; see note in that phase)
-- ⬜ **Phases 5–7** — not started
+- ✅ **Phase 5 — Corpus subsystem** — done. `corpus/` package: static, plaintext file, codebase extraction, and **Ollama** local-model sources, selected in the TUI via `-corpus`.
+- ⬜ **Phases 6–7** — not started
 
 Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
-- The `core` package stays pure — no `os`, `syscall/js`, or Bubble Tea imports.
-- Rules ultimately come from **parsing `mappings/`** (Phase 1), never permanently hardcoded — the hardcoded `staticMapping` is a temporary stand-in behind the `Mapping` interface.
+- The `core` package stays pure — no `os`, `syscall/js`, or Bubble Tea imports. The parser takes an `fs.FS` (the embedded `mappings.FS`); corpus I/O (files, network) lives in the separate `corpus` package, outside `core`.
+- Rules come from **parsing `mappings/`** — the hardcoded `staticMapping` is now only a fallback behind the `Mapping` interface.
 - Keep the current left-hand layout from special-casing shared code; model layouts as data.
 
 ---
@@ -33,20 +34,18 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 
 ## Phase 1 — Mapping parser (the foundation)
 
-> **Status: ⏭️ deferred (recommended next).** The `Mapping` interface and a hardcoded `staticMapping` behind it already exist (`core/mapping.go`, `core/mapping_static.go`). This phase replaces `staticMapping` with a parser-backed implementation — no changes to the drill or frontends.
+> **Status: ✅ done.** `core.ParseMapping(fsys fs.FS, dir string) (Mapping, error)` (`core/mapping_parse.go`) reads `mappings/*.json` and builds a `mirrorTable` (`core/mirror_table.go`) — the same type `NewStaticMapping` builds, so parsed and static behave identically by construction. Both frontends call it against the embedded `mappings.FS`, falling back to `NewStaticMapping()` on error.
 
 **Goal:** turn the `mappings/` directory into a normalized, queryable model. This is the piece that replaces the prototype's hardcoded `MIRROR`/`routeFor`/`diagnose`.
 
-- Model the Karabiner subset actually used: `basic` manipulators, `from`/`to` key codes, `set_variable`, `variable_if`/`variable_unless` conditions, `to_if_alone`, `to_after_key_up`.
-- Represent **layers as variable states** (`alt`, `nav`, …) rather than assuming specific keys. Load a whole directory and merge multiple files into one mapping.
-- Expose two lookups the trainer needs:
-  - forward: `(physical keystroke, layer state) → output`
-  - reverse: `output char → the keystroke + layer state that produces it` (for hints).
-- Detect layer-arming keys (e.g. hold `spacebar` → `alt`, hold `b` → `nav`) and tap-vs-hold behavior.
+- Models the Karabiner subset actually used: `manipulators`, `from`/`to` key codes, and `variable_if`/`variable_unless` conditions.
+- Represents the alt-mirror **layer as a variable state** (`{type: variable_if, name: alt, value: 1}`) rather than assuming specific keys; loads a whole directory (globbed, sorted for determinism) and merges files.
+- Extracts left-key → output mirror pairs (physical left key in `LeftHandKeys`, single `to.key_code`); `keyCodeToRune` maps key codes to runes. Errors on unknown key codes and on conflicting duplicate mappings.
+- Kept **wasm-safe**: takes an `fs.FS` (the embedded `mappings.FS`), never the OS filesystem.
 
-**Key files:** `core/mapping/` (parser, model, lookup).
+**Key files:** `core/mapping_parse.go`, `core/mirror_table.go`, `core/mapping_parse_test.go`, `mappings/mappings.go` (embed).
 
-**Done when:** parsing `mappings/qwerty-mirror/` reproduces every rule the prototype hardcodes (mirror pairs, digit pairs, nav arrows, caps/tab), verified by table-driven tests against the JSON. No layout constants in code.
+**Done when:** parsing `mappings/qwerty-mirror/` reproduces every rule the static mapping hardcodes — verified by oracle tests asserting parsed `Hint`/`Supported`/`Diagnose`/`Reference` equal the static mapping's, plus `fstest.MapFS` edge cases.
 
 ---
 
@@ -103,15 +102,17 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 
 ## Phase 5 — Corpus subsystem
 
+> **Status: ✅ done.** The `corpus/` package provides a `Source` (implementing `core.Corpus`) with four constructors: `FromText`/`FromReader`/`FromFile` (plaintext), `FromCodebase` (tokenizes source identifiers into practice text), and `FromOllama` (queries a local Ollama model). The TUI selects one via `-corpus` (`static|file|code|ollama`); each falls back to the static corpus with a stderr warning on failure.
+
 **Goal:** pluggable practice content, replacing the inline word/sentence banks.
 
-- Define a corpus `Source` interface (yields words/sentences/streams) consumed by the trainer (and later the simulator).
-- Implementations: static bank (migrate the prototype's list), plaintext file, and **codebase extraction** (tokenize source into practice text, filter to chars the mapping supports).
-- Wire the trainer's content injection point (Phase 2) to a selected source.
+- `Source` yields words/sentences via the existing `core.Corpus` interface (deterministic-by-seed selection, ported from `staticCorpus`), so the trainer and later the simulator consume it unchanged.
+- Implementations: static bank, plaintext file/reader/text, **codebase extraction** (`Words`/`Sentences` tokenizers, camel/identifier splitting, filtered to the chars the mapping supports), and **Ollama** local-model generation (official `github.com/ollama/ollama/api` client, non-streaming, errors on too-few results so the caller falls back).
+- The web frontend keeps the static corpus — a browser sandbox cannot reach a local Ollama server or the filesystem.
 
-**Key files:** `core/corpus/`.
+**Key files:** `corpus/source.go`, `corpus/tokenize.go`, `corpus/file.go`, `corpus/codebase.go`, `corpus/ollama.go`.
 
-**Done when:** the trainer can drill on text extracted from a real codebase, filtered to mappable characters.
+**Done when:** the trainer can drill on text extracted from a real codebase or generated by a local Ollama model, filtered to mappable characters. ✅
 
 ---
 
@@ -145,6 +146,6 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 
 ## Sequencing notes
 
-- **1 → 2 → 3** is the critical path to a usable trainer; 4 reuses the same core.
-- 5 unblocks richer content for 2/3/4 and is a prerequisite input for 6 and 7.
-- 6 and 7 are independent of each other; both depend on 1 (and 5 for content).
+- **1 → 2 → 3** is the critical path to a usable trainer; 4 reuses the same core. ✅
+- 5 unblocks richer content for 2/3/4 and is a prerequisite input for 6 and 7. ✅
+- 6 and 7 are independent of each other; both depend on 1 (and 5 for content) — both now unblocked.
