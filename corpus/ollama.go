@@ -3,8 +3,6 @@ package corpus
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -126,17 +124,6 @@ func FromOllama(ctx context.Context, opts Options, fallback core.Corpus) (*Strea
 // Describe reports the model name; Stream surfaces it as CorpusStatus.Detail
 // while generation is healthy.
 func (p *ollamaProducer) Describe() string { return p.model }
-
-func newOllamaClient(host string) (*api.Client, error) {
-	if host == "" {
-		return api.ClientFromEnvironment()
-	}
-	base, err := url.Parse(host)
-	if err != nil {
-		return nil, err
-	}
-	return api.NewClient(base, http.DefaultClient), nil
-}
 
 // Produce asks the model for about n items of kind and emits each as soon as
 // its line is complete, using the client's streaming mode (Stream is left at

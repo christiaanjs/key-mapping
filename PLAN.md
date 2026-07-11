@@ -109,8 +109,8 @@ Guiding constraints (from `trainer/architecture.md` and `CLAUDE.md`):
 - `Source` yields words/sentences via the existing `core.Corpus` interface (deterministic-by-seed selection, ported from `staticCorpus`), so the trainer and later the simulator consume it unchanged.
 - Implementations: static bank, plaintext file/reader/text, **codebase extraction** (`Words`/`Sentences` tokenizers, camel/identifier splitting, filtered to the chars the mapping supports), and **Ollama** local-model generation.
 - **Generation streams; it is not fetched upfront.** `Producer` emits each item the moment its line completes, and `Stream` serves the static fallback until the first items land — so the app starts instantly and upgrades in place instead of blocking on the model. Buffers are rings (unbounded content, bounded memory) and the producer only wakes on demand, so an idle trainer generates nothing. Failures (dead server, a model repeating itself) are soft: it backs off, retries, and keeps drilling on the fallback.
-- The corpus's live state is surfaced through `core` as `State.Corpus` (via the optional `StatusReporter` interface), so the frontends can *show* the user that content is still arriving rather than appearing to hang.
-- The web frontend keeps the static corpus — a browser sandbox cannot reach a local Ollama server or the filesystem.
+- The corpus's live state is surfaced through `core` as `State.Corpus` (via the optional `StatusReporter` interface), so **both** frontends *show* the user that content is still arriving rather than appearing to hang.
+- **The web frontend streams too** (`?corpus=ollama`): Ollama's default CORS policy allows localhost origins, and Go's wasm `net/http` reaches the network via `fetch`. It has no file/codebase option (no filesystem in the sandbox). See CLAUDE.md for the wasm gotchas this uncovered.
 
 **Key files:** `corpus/source.go`, `corpus/tokenize.go`, `corpus/file.go`, `corpus/codebase.go`, `corpus/producer.go`, `corpus/stream.go`, `corpus/ollama.go`.
 

@@ -22,7 +22,7 @@ Phases 0–5 of `PLAN.md` are built: the pure `core` (now including the mapping 
 
 Remaining goals: Phase 6 (simulation/efficiency) and Phase 7 (LLM content generation, provider-flexible) — see `PLAN.md`.
 
-Key seams to preserve when extending: keep `core` pure (the parser takes an `fs.FS`, never `os`; corpus I/O stays in `corpus/`). The web frontend uses the parsed mapping + static corpus only — a browser sandbox can reach neither the filesystem nor a local Ollama server.
+Key seams to preserve when extending: keep `core` pure (the parser takes an `fs.FS`, never `os`; corpus I/O stays in `corpus/`). The web frontend has no file/codebase corpus (no filesystem in the sandbox), but it **does** stream from Ollama — see the wasm section below.
 
 ### The Corpus contract (read before touching corpus code)
 
@@ -32,6 +32,21 @@ Consequences worth knowing before changing `corpus/stream.go`:
 - A corpus reports progress by optionally implementing `core.StatusReporter`; the core surfaces it as `State.Corpus` so frontends can show that content is still arriving. The TUI ticks to re-render while it changes — Bubble Tea only redraws on messages, so background arrivals are otherwise invisible.
 - The producer must stay **demand-driven**: it sleeps unless woken by consumption or a backoff timer. Two things preserve that, and both have regression tests — a pending wake must not short-circuit a backoff window, and a round that succeeds but adds nothing new (a model repeating itself, deduped away by the ring) must back off exactly like a failure. Break either and an idle trainer regenerates forever at full GPU.
 - Reasoning models (qwen3, deepseek-r1) must have thinking disabled — they emit their chain-of-thought to `GenerateResponse.Thinking`, not `.Response`, and will churn for minutes producing no usable words. `ollamaProducer.noThink` resolves the capability from the server once; it is conditional because sending `think` to a model that lacks the capability is rejected.
+- **Each kind (words, sentences) gets its own producer goroutine.** This is load-bearing, not decoration. A `Produce` call runs to completion, and a model asked for a batch of words can stream for minutes (mostly duplicates that dedup discards). With one shared producer, sentences were starved for that entire time — observed live as sentences stuck at 0 for >2 minutes while words trickled in. Independent loops (each with its own ring, backoff and wake) mean neither kind blocks the other. The low-water marks double as the per-request batch size, so keep them small for the same reason.
+
+## The wasm build and Ollama (findings — don't re-derive these)
+
+The browser **can** stream from a local Ollama. Earlier docs claimed it couldn't; that was wrong. Three non-obvious things make it work, each of which cost real debugging:
+
+1. **CORS is not a problem.** Ollama's default policy allows `localhost` origins, so a page on `http://localhost:8000` may call `http://localhost:11434` directly (verified with a preflight). It must be served over HTTP from localhost: `file://` is origin `null`, which Ollama rejects.
+
+2. **`http.DefaultClient` silently cannot reach the network under `GOOS=js`.** `net/http` only routes through the browser's `fetch()` when the Transport has *no* dial hooks; if `Dial`/`DialContext`/... is set it honours that and dials, landing in Go's in-process **fake network**, where localhost always fails with "connection refused". `http.DefaultTransport` *does* set `DialContext`. Hence `corpus/ollama_client_wasm.go`, which hands the client a zero-value `&http.Transport{}` — that, and only that, is what makes the request go out over fetch. (See `net/http/roundtrip_js.go`.)
+
+3. **Node deliberately disables fetch**, so it cannot verify the above by default: Go sets `jsFetchDisabled` when it detects Node (via `process.argv0`, go.dev/issue/57613) and falls back to the same fake network. `scripts/wasm-smoke.cjs` works around it by swapping in a cloned `process` — `argv0` is read-only *and* non-configurable, and a `Proxy` may not lie about such a property, so a clone is the only way.
+
+`make smoke-web` / `make smoke-web-ollama` run that harness. Prefer them over trusting `go build ./cmd/web`: compiling proves nothing about whether the browser can actually talk to the model — finding (2) compiled perfectly and was completely broken.
+
+**Known cost, accepted:** importing the official Ollama client into the wasm build takes `web/app.wasm` from ~3.6 MB to ~12 MB (1.0 → 3.2 MB gzipped). The bulk is dead weight in a browser — `ollama/auth` pulls in `golang.org/x/crypto/ssh` (blowfish, curve25519, poly1305), plus `crypto/tls`, `crypto/x509`, `log/slog`, `regexp`. Fine for local single-user use. If it ever matters, the fix is a lean wasm-only `Producer` that speaks `/api/generate` over plain HTTP+JSON, behind the same build tag as `ollama_client_wasm.go` — no change to `Stream` or anything above it.
 
 ## Target architecture (from `trainer/architecture.md`)
 

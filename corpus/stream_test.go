@@ -166,8 +166,10 @@ func TestStreamRecoversFromFailure(t *testing.T) {
 
 	waitFor(t, 2*time.Second, func() bool { return s.Status().Phase == core.CorpusFailed })
 
+	// Recovery is driven by the backoff timer, not by demand: wakes are
+	// deliberately ignored inside a backoff window (otherwise a dead server
+	// would be retried on every drill item). So just let the timer expire.
 	failing.Store(false)
-	s.signal() // demand-drive a retry instead of waiting out the backoff timer
 
 	waitFor(t, 35*time.Second, func() bool { return s.Status().Phase == core.CorpusStreaming })
 }
@@ -232,22 +234,22 @@ func TestStreamRepetitiveProducerBacksOff(t *testing.T) {
 	s := NewStream(context.Background(), fp, "fake", fallback)
 	defer s.Close()
 
-	// Cold-start rounds land (5 words, 5 sentences — far below low-water).
+	// Cold-start rounds land (5 words, 5 sentences — far below low-water), then
+	// every further round adds nothing and the backoff must engage.
 	waitFor(t, 2*time.Second, func() bool { return s.Status().Phase == core.CorpusStreaming })
-	waitFor(t, 2*time.Second, func() bool { return fp.callCount() >= 2 })
-	time.Sleep(100 * time.Millisecond) // let the first unproductive round, if any, settle
+	time.Sleep(300 * time.Millisecond) // rounds are instant here; let backoff engage
 	settled := fp.callCount()
 
 	// Hammer it with demand. Every one of these serves sees a below-low-water
-	// buffer and signals the producer; the backoff must absorb them all.
+	// buffer and signals the producer; the backoff must absorb them all. We stay
+	// well inside minBackoff, during which NO round may run at all.
 	for i := 0; i < 500; i++ {
 		s.Word(core.LengthAny, i)
 		s.Sentence(i)
 	}
 	time.Sleep(500 * time.Millisecond) // << minBackoff, so no retry may fire
 
-	// At most one more round (one Produce per kind) may have been in flight.
-	if got := fp.callCount(); got > settled+2 {
+	if got := fp.callCount(); got != settled {
 		t.Fatalf("repetitive producer kept regenerating: %d Produce calls after 1000 serves (was %d); "+
 			"unproductive rounds are not backing off", got, settled)
 	}
@@ -256,6 +258,45 @@ func TestStreamRepetitiveProducerBacksOff(t *testing.T) {
 	// not the same as giving up.
 	if w := s.Word(core.LengthAny, 0); w == "fallback" {
 		t.Fatalf("Word fell back to the static corpus despite having buffered content")
+	}
+}
+
+// TestStreamSlowWordsDoNotStarveSentences is a regression test for a bug found
+// only by running the thing live: sentences sat at 0 for over two minutes while
+// words trickled in.
+//
+// The cause was producing both kinds in one round, words first. A Produce call
+// runs to completion, and a model asked for n words happily streams for minutes
+// (mostly duplicates, which dedup discards) — so the sentence buffer never got
+// a turn, and sentence mode drilled on fallback text the whole time. The
+// producer must alternate: whichever kind is furthest from what it needs goes
+// next.
+func TestStreamSlowWordsDoNotStarveSentences(t *testing.T) {
+	fallback := &fixedCorpus{word: "fallback", sentence: "fallback sentence with words"}
+
+	var counter int64
+	fp := &fakeProducer{fn: func(ctx context.Context, kind Kind, n int, emit func(string)) error {
+		if kind == KindWord {
+			// A verbose, slow word generator — the realistic bad case.
+			emitN(KindWord, n, &counter, emit)
+			select {
+			case <-time.After(10 * time.Second):
+			case <-ctx.Done():
+			}
+			return ctx.Err()
+		}
+		emitN(KindSentence, n, &counter, emit)
+		return nil
+	}}
+
+	s := NewStream(context.Background(), fp, "fake", fallback)
+	defer s.Close()
+
+	// Sentences must arrive without waiting for the slow word round to finish.
+	waitFor(t, 3*time.Second, func() bool { return s.Status().Sentences > 0 })
+
+	if got := s.Sentence(0); got == fallback.sentence {
+		t.Fatalf("Sentence still serving fallback text after sentences were generated")
 	}
 }
 

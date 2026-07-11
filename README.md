@@ -87,7 +87,29 @@ Options:
 
 Content is **unbounded but memory is not**: words and sentences land in ring buffers (2000 / 500, oldest evicted), and the producer only wakes when the drill has actually consumed enough to need more — an idle trainer generates nothing, so it won't sit there burning your GPU. Reasoning models (qwen3, deepseek-r1, …) have thinking disabled automatically; otherwise they spend minutes emitting a chain-of-thought before producing a single usable word.
 
-Any source that fails (missing file, unreachable Ollama, a model repeating itself) falls back to the static bank and keeps drilling — a dead Ollama server never breaks the trainer, it just retries with a backoff. The **web** app always uses the static corpus: a browser sandbox can reach neither the filesystem nor a local Ollama server.
+Any source that fails (missing file, unreachable Ollama, a model repeating itself) falls back to the static bank and keeps drilling — a dead Ollama server never breaks the trainer, it just retries with a backoff.
+
+### The web app streams too
+
+The browser build supports the same streaming corpus, selected by query string (its equivalent of the TUI's flags):
+
+```
+http://localhost:8000/                                  static bank (default)
+http://localhost:8000/?corpus=ollama                    stream from a local Ollama
+http://localhost:8000/?corpus=ollama&model=qwen3:8b     ...with a specific model
+http://localhost:8000/?corpus=ollama&host=http://…      ...on a specific server
+```
+
+The page shows the same status line, and starts instantly on static text while the model warms up. There is no `file`/`code` option — those need a filesystem the sandbox doesn't have.
+
+This works despite the sandbox because **Ollama's default CORS policy allows `localhost` origins**, so a page served from `http://localhost:8000` may call `http://localhost:11434` directly. Serve over HTTP from localhost (`make serve-web`): under `file://` the origin is `null`, which Ollama rejects — and `instantiateStreaming` needs HTTP regardless.
+
+To verify the browser build actually works (not just that it compiles):
+
+```sh
+make smoke-web          # boots web/app.wasm under Node, asserts the static bank serves
+make smoke-web-ollama   # ...and that it really streams generated text from Ollama
+```
 
 To exercise the Ollama path against a real server:
 
