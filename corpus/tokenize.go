@@ -61,27 +61,10 @@ func Sentences(text string) []string {
 	var sentences []string
 
 	for _, line := range lines {
-		lower := strings.ToLower(line)
-
-		var b strings.Builder
-		for _, r := range lower {
-			switch {
-			case r >= 'a' && r <= 'z':
-				b.WriteRune(r)
-			case r == ' ' || r == '\t':
-				b.WriteRune(' ')
-			default:
-				// drop punctuation/digits/other runes entirely
-			}
-		}
-
-		// Collapse whitespace to single spaces and trim.
-		fields := strings.Fields(b.String())
-		if len(fields) < 4 {
+		sentence, ok := cleanSentenceLine(line)
+		if !ok {
 			continue
 		}
-		sentence := strings.Join(fields, " ")
-
 		if !seen[sentence] {
 			seen[sentence] = true
 			sentences = append(sentences, sentence)
@@ -89,4 +72,43 @@ func Sentences(text string) []string {
 	}
 
 	return sentences
+}
+
+// cleanSentenceLine applies Sentences' per-line cleaning rule to a single
+// line: lowercase, strip to a-z and spaces, collapse whitespace, and require
+// at least 4 resulting words. ok is false for lines that clean to nothing
+// usable. Exposed so a line arriving incrementally (e.g. streamed from an
+// LLM) can be cleaned the same way as a line from a whole document.
+func cleanSentenceLine(line string) (sentence string, ok bool) {
+	lower := strings.ToLower(line)
+
+	var b strings.Builder
+	for _, r := range lower {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r == ' ' || r == '\t':
+			b.WriteRune(' ')
+		default:
+			// drop punctuation/digits/other runes entirely
+		}
+	}
+
+	fields := strings.Fields(b.String())
+	if len(fields) < 4 {
+		return "", false
+	}
+	return strings.Join(fields, " "), true
+}
+
+// firstWord returns the first lowercase [a-z]+ token in line (after the same
+// cleaning Words applies), if any. Used to clean a single streamed line down
+// to one practice word, mirroring how parseWordLines used to take the first
+// token per line of a whole response.
+func firstWord(line string) (word string, ok bool) {
+	tokens := Words(line)
+	if len(tokens) == 0 {
+		return "", false
+	}
+	return tokens[0], true
 }

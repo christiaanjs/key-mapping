@@ -114,13 +114,39 @@ type RefRow struct {
 	Output string `json:"output"`
 }
 
+// CorpusPhase says what the practice-text source is doing right now. A fixed
+// bank (static, file, codebase) is always CorpusReady; a streaming source moves
+// through warming -> streaming, or lands on failed, and the frontends show that
+// so content arriving in the background is never silent.
+type CorpusPhase string
+
+const (
+	CorpusReady     CorpusPhase = "ready"     // a fixed bank, fully loaded
+	CorpusWarming   CorpusPhase = "warming"   // first items still generating; serving fallback text meanwhile
+	CorpusStreaming CorpusPhase = "streaming" // serving generated text, still topping up in the background
+	CorpusFailed    CorpusPhase = "failed"    // generation failed; serving fallback text
+)
+
+// CorpusStatus is the render-agnostic report of where practice text is coming
+// from. It is surfaced in every State so a frontend can tell the user that a
+// streaming corpus is still warming up, how much has arrived, and whether it
+// fell back.
+type CorpusStatus struct {
+	Source    string      `json:"source"` // e.g. "static", "file", "ollama"
+	Phase     CorpusPhase `json:"phase"`
+	Words     int         `json:"words"`            // practice words available
+	Sentences int         `json:"sentences"`        // practice sentences available
+	Detail    string      `json:"detail,omitempty"` // model name, error message, ...
+}
+
 // State is the complete, render-agnostic snapshot both frontends consume. Only
 // the sub-state for the active Mode is populated; the rest are zero.
 type State struct {
-	Mode      Mode        `json:"mode"`
-	Content   Content     `json:"content"` // echoed so frontends can render the active chip
-	Length    Length      `json:"length"`  // echoed for the active length chip
-	Drill     *DrillState `json:"drill,omitempty"`
-	Nav       *NavState   `json:"nav,omitempty"`
-	Reference []RefRow    `json:"reference,omitempty"`
+	Mode      Mode         `json:"mode"`
+	Content   Content      `json:"content"` // echoed so frontends can render the active chip
+	Length    Length       `json:"length"`  // echoed for the active length chip
+	Corpus    CorpusStatus `json:"corpus"`  // where practice text is coming from, and whether it is still arriving
+	Drill     *DrillState  `json:"drill,omitempty"`
+	Nav       *NavState    `json:"nav,omitempty"`
+	Reference []RefRow     `json:"reference,omitempty"`
 }

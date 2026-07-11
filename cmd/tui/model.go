@@ -22,6 +22,10 @@ type model struct {
 	state   core.State
 	scratch []rune
 
+	// tick advances while a streaming corpus is still filling, purely to drive
+	// the status spinner (see corpusTickMsg).
+	tick int
+
 	width, height int
 }
 
@@ -35,13 +39,47 @@ func newModel(app *core.App) model {
 	}
 }
 
-func (m model) Init() tea.Cmd { return nil }
+// corpusTickMsg drives a periodic re-render while the corpus is still filling.
+// A streaming corpus is written by a background goroutine, but Bubble Tea only
+// re-renders in response to a message — without this the user would see the
+// corpus status frozen at "warming" until their next keystroke.
+type corpusTickMsg struct{}
+
+const corpusTickInterval = 300 * time.Millisecond
+
+func corpusTick() tea.Cmd {
+	return tea.Tick(corpusTickInterval, func(time.Time) tea.Msg { return corpusTickMsg{} })
+}
+
+// corpusSettled reports whether the corpus has reached a state that can no
+// longer change on its own, i.e. a fixed bank. Failed does NOT count: the
+// stream retries with a backoff and may recover into streaming.
+func corpusSettled(st core.State) bool {
+	return st.Corpus.Phase == core.CorpusReady
+}
+
+// Init starts the corpus ticker only when the corpus can actually change. A
+// static/file/codebase bank is fully loaded up front, so the TUI stays
+// completely idle for those, as it did before streaming existed.
+func (m model) Init() tea.Cmd {
+	if corpusSettled(m.state) {
+		return nil
+	}
+	return corpusTick()
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case corpusTickMsg:
+		m.tick++
+		m.state = m.app.Snapshot()
+		if corpusSettled(m.state) {
+			return m, nil
+		}
+		return m, corpusTick()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}

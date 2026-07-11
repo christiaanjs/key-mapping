@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -25,8 +24,14 @@ func main() {
 	ollamaHost := flag.String("ollama-host", "", "Ollama host URL to use with -corpus=ollama (empty uses OLLAMA_HOST or the client default)")
 	flag.Parse()
 
+	// A streaming corpus keeps a producer goroutine alive for the life of the
+	// program, so its context is cancelled on exit rather than timed out — the
+	// drill is meant to keep pulling fresh text for as long as it runs.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	mapping := buildMapping()
-	corp := buildCorpus(*corpusKind, *corpusPath, *ollamaModel, *ollamaHost)
+	corp := buildCorpus(ctx, *corpusKind, *corpusPath, *ollamaModel, *ollamaHost)
 
 	app := core.New(mapping, corp)
 
@@ -48,11 +53,16 @@ func buildMapping() core.Mapping {
 	return m
 }
 
-// buildCorpus selects a corpus.Source based on the -corpus flag, printing a
-// warning to stderr and falling back to the static corpus on any failure.
-// All output happens here, before the Bubble Tea program takes over the
-// screen.
-func buildCorpus(kind, path, model, host string) core.Corpus {
+// buildCorpus selects a corpus based on the -corpus flag, printing a warning to
+// stderr and falling back to the static corpus on any failure. All output
+// happens here, before the Bubble Tea program takes over the screen.
+//
+// The file and code sources load their whole bank up front (a local read, so it
+// is fast). The ollama source does NOT: it returns immediately and streams text
+// in from the model on ctx's goroutine, serving static text until the first
+// items land. The TUI reports that live via State.Corpus, so a slow model shows
+// as "warming" rather than a frozen startup.
+func buildCorpus(ctx context.Context, kind, path, model, host string) core.Corpus {
 	switch kind {
 	case "static":
 		fmt.Fprintln(os.Stderr, "tui: using corpus: static")
@@ -85,14 +95,15 @@ func buildCorpus(kind, path, model, host string) core.Corpus {
 		return src
 
 	case "ollama":
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		src, err := corpus.FromOllama(ctx, corpus.Options{Model: model, Host: host})
+		// Only a malformed host fails here; an unreachable or slow server is a
+		// soft failure the stream reports through State.Corpus while the drill
+		// carries on against the static fallback.
+		src, err := corpus.FromOllama(ctx, corpus.Options{Model: model, Host: host}, core.NewStaticCorpus())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "tui: warning: failed to build ollama corpus: %v; falling back to static corpus\n", err)
 			return core.NewStaticCorpus()
 		}
-		fmt.Fprintln(os.Stderr, "tui: using corpus: ollama")
+		fmt.Fprintln(os.Stderr, "tui: using corpus: ollama (streaming in the background)")
 		return src
 
 	default:

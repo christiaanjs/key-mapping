@@ -6,11 +6,16 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/types/model"
+
+	"github.com/christiaanswanepoel/key-mapping/core"
 )
 
-// Options configures FromOllama. Zero values pick sensible defaults.
+// Options configures NewOllama. Zero values pick sensible defaults.
 type Options struct {
 	// Model is the Ollama model name to query (e.g. "llama3.2"). Defaults to
 	// "llama3.2" if empty.
@@ -20,44 +25,81 @@ type Options struct {
 	// empty, the client is built from the OLLAMA_HOST environment variable
 	// (or its own default) via api.ClientFromEnvironment.
 	Host string
-
-	// NumWords is how many practice words to request. Defaults to 200.
-	NumWords int
-
-	// NumSentences is how many practice sentences to request. Defaults to 40.
-	NumSentences int
 }
 
-const (
-	defaultModel        = "llama3.2"
-	defaultNumWords     = 200
-	defaultNumSentences = 40
-
-	// minWords is the minimum number of parsed words FromOllama requires
-	// before it considers the response usable; below this it returns an
-	// error so the caller can fall back to a static corpus.
-	minWords = 10
-)
+const defaultModel = "llama3.2"
 
 func (o Options) withDefaults() Options {
 	if o.Model == "" {
 		o.Model = defaultModel
 	}
-	if o.NumWords <= 0 {
-		o.NumWords = defaultNumWords
-	}
-	if o.NumSentences <= 0 {
-		o.NumSentences = defaultNumSentences
-	}
 	return o
 }
 
-// FromOllama generates a word bank and sentence bank by querying a local
-// Ollama server for practice text, and builds a Source from the parsed
-// response. If the model's output does not yield enough usable words or any
-// usable sentences, an error is returned so the caller can fall back to
-// another Corpus (e.g. core.NewStaticCorpus).
-func FromOllama(ctx context.Context, opts Options) (*Source, error) {
+// ollamaProducer is a Producer backed by a local Ollama server. Unlike the
+// old batch FromOllama, each Produce call streams the Generate response and
+// emits lines as they complete rather than waiting for the whole thing, so
+// the Stream wrapping it can serve real content within a second or two.
+type ollamaProducer struct {
+	client *api.Client
+	model  string
+
+	// round is folded into the prompt (via a rotating theme) so repeated
+	// Produce calls ask for different content instead of regenerating the
+	// same list. Produce is called from Stream's single producer goroutine,
+	// but incremented atomically to be safe against any other caller.
+	round int64
+
+	// Whether this model is a "thinking" model, resolved once from the
+	// server and cached. See noThink for why this matters.
+	thinkMu       sync.Mutex
+	thinkResolved bool
+	thinks        bool
+}
+
+// noThink returns the Think value to send for this model.
+//
+// A reasoning model (qwen3, deepseek-r1, ...) defaults to emitting a long
+// chain-of-thought before it answers. That trace goes to GenerateResponse
+// .Thinking, not .Response, so we would sit there for minutes streaming
+// nothing usable — the corpus would stay stuck "warming" while the GPU churns.
+// We want the word list, not the reasoning, so thinking is explicitly disabled.
+//
+// It has to be conditional: sending `think` to a model that has no thinking
+// capability is rejected by the server, so the field is left unset for those.
+// The capability is resolved once, lazily, and a failed lookup is simply
+// retried next round rather than being cached as a negative.
+func (p *ollamaProducer) noThink(ctx context.Context) *api.ThinkValue {
+	p.thinkMu.Lock()
+	defer p.thinkMu.Unlock()
+
+	if !p.thinkResolved {
+		resp, err := p.client.Show(ctx, &api.ShowRequest{Model: p.model})
+		if err != nil {
+			// Leave it unresolved: if the server is simply down, Produce is
+			// about to fail anyway and Stream will back off and retry.
+			return nil
+		}
+		for _, c := range resp.Capabilities {
+			if c == model.CapabilityThinking {
+				p.thinks = true
+				break
+			}
+		}
+		p.thinkResolved = true
+	}
+
+	if !p.thinks {
+		return nil
+	}
+	return &api.ThinkValue{Value: false}
+}
+
+// NewOllama builds a Producer backed by opts. It fails only if the client
+// itself cannot be constructed (e.g. a bad Host URL); an unreachable server
+// is a runtime concern that Stream handles as a soft failure, not something
+// this constructor can detect up front.
+func NewOllama(opts Options) (Producer, error) {
 	opts = opts.withDefaults()
 
 	client, err := newOllamaClient(opts.Host)
@@ -65,28 +107,25 @@ func FromOllama(ctx context.Context, opts Options) (*Source, error) {
 		return nil, fmt.Errorf("corpus: build ollama client: %w", err)
 	}
 
-	wordsRaw, err := generate(ctx, client, opts.Model, wordsPrompt(opts.NumWords))
-	if err != nil {
-		return nil, fmt.Errorf("corpus: generate words: %w", err)
-	}
-
-	sentencesRaw, err := generate(ctx, client, opts.Model, sentencesPrompt(opts.NumSentences))
-	if err != nil {
-		return nil, fmt.Errorf("corpus: generate sentences: %w", err)
-	}
-
-	words := parseWordLines(wordsRaw)
-	sentences := parseSentenceLines(sentencesRaw)
-
-	if len(words) < minWords {
-		return nil, fmt.Errorf("corpus: ollama returned too few usable words (%d, want >= %d)", len(words), minWords)
-	}
-	if len(sentences) == 0 {
-		return nil, fmt.Errorf("corpus: ollama returned no usable sentences")
-	}
-
-	return &Source{words: words, sentences: sentences}, nil
+	return &ollamaProducer{client: client, model: opts.Model}, nil
 }
+
+// FromOllama is the convenience entrypoint frontends use: it builds an
+// Ollama producer and wraps it in a Stream that falls back to fallback
+// whenever a kind's buffer is empty. It returns an error only if the client
+// cannot be constructed — never for a down or slow server, which Stream
+// handles internally so a dead Ollama never breaks the trainer.
+func FromOllama(ctx context.Context, opts Options, fallback core.Corpus) (*Stream, error) {
+	p, err := NewOllama(opts)
+	if err != nil {
+		return nil, err
+	}
+	return NewStream(ctx, p, "ollama", fallback), nil
+}
+
+// Describe reports the model name; Stream surfaces it as CorpusStatus.Detail
+// while generation is healthy.
+func (p *ollamaProducer) Describe() string { return p.model }
 
 func newOllamaClient(host string) (*api.Client, error) {
 	if host == "" {
@@ -99,74 +138,98 @@ func newOllamaClient(host string) (*api.Client, error) {
 	return api.NewClient(base, http.DefaultClient), nil
 }
 
-func generate(ctx context.Context, client *api.Client, model, prompt string) (string, error) {
-	stream := false
-	var b strings.Builder
+// Produce asks the model for about n items of kind and emits each as soon as
+// its line is complete, using the client's streaming mode (Stream is left at
+// its default of true, so GenerateResponseFunc fires per chunk rather than
+// once at the end).
+func (p *ollamaProducer) Produce(ctx context.Context, kind Kind, n int, emit func(string)) error {
+	round := atomic.AddInt64(&p.round, 1) - 1
+	prompt := promptFor(kind, n, round)
 
+	var pending strings.Builder
 	req := &api.GenerateRequest{
-		Model:  model,
+		Model:  p.model,
 		Prompt: prompt,
-		Stream: &stream,
+		Think:  p.noThink(ctx),
 	}
 
-	err := client.Generate(ctx, req, func(r api.GenerateResponse) error {
-		b.WriteString(r.Response)
+	err := p.client.Generate(ctx, req, func(r api.GenerateResponse) error {
+		// r.Thinking holds a "thinking" model's reasoning trace (e.g.
+		// qwen3), never the list content itself — only r.Response is real
+		// output and must be accumulated.
+		for _, c := range r.Response {
+			if c == '\n' {
+				emitLine(kind, pending.String(), emit)
+				pending.Reset()
+				continue
+			}
+			pending.WriteRune(c)
+		}
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return fmt.Errorf("corpus: ollama generate: %w", err)
 	}
 
-	return b.String(), nil
+	// The response may not end in a newline; flush whatever's left.
+	if pending.Len() > 0 {
+		emitLine(kind, pending.String(), emit)
+	}
+
+	return nil
 }
 
-func wordsPrompt(n int) string {
-	return fmt.Sprintf(
-		"List %d common English words for a touch-typing practice tool.\n"+
-			"Rules:\n"+
-			"- lowercase letters a-z only, no punctuation, no numbers, no apostrophes\n"+
-			"- one word per line\n"+
-			"- no numbering, no bullets, no extra commentary\n"+
-			"- no duplicate words\n",
-		n,
-	)
-}
-
-func sentencesPrompt(n int) string {
-	return fmt.Sprintf(
-		"Write %d short, simple English sentences for a touch-typing practice tool.\n"+
-			"Rules:\n"+
-			"- lowercase letters a-z and single spaces only; no punctuation, no numbers, no apostrophes\n"+
-			"- each sentence on its own line\n"+
-			"- no numbering, no bullets, no extra commentary\n"+
-			"- each sentence should have at least 4 words\n",
-		n,
-	)
-}
-
-// parseWordLines parses a raw LLM response into a clean list of practice
-// words: for each line, the first [a-z]+ token is taken (after lowercasing
-// and stripping numbering/punctuation), and results are deduplicated
-// preserving first-seen order. Lines with no letters are skipped.
-func parseWordLines(s string) []string {
-	seen := make(map[string]bool)
-	var words []string
-
-	for _, line := range strings.Split(s, "\n") {
-		for _, tok := range Words(line) {
-			if !seen[tok] {
-				seen[tok] = true
-				words = append(words, tok)
-			}
-			break // only the first token on the line
+// emitLine cleans one line of model output according to kind (reusing the
+// same tokenizers the rest of the package uses) and emits it if it cleans to
+// something usable; a junk line emits nothing.
+func emitLine(kind Kind, line string, emit func(string)) {
+	switch kind {
+	case KindWord:
+		if w, ok := firstWord(line); ok {
+			emit(w)
+		}
+	case KindSentence:
+		if s, ok := cleanSentenceLine(line); ok {
+			emit(s)
 		}
 	}
-
-	return words
 }
 
-// parseSentenceLines parses a raw LLM response into a clean list of practice
-// sentences, reusing the same line-cleaning rules as Sentences.
-func parseSentenceLines(s string) []string {
-	return Sentences(s)
+// themes rotate across rounds so successive Produce calls for the same kind
+// ask about different subject matter instead of regenerating the same list.
+var themes = []string{
+	"everyday life", "nature and weather", "food and cooking", "travel and places",
+	"work and school", "sports and games", "technology", "animals",
+	"family and friends", "emotions", "the seasons", "music and art",
+}
+
+// promptFor builds the Generate prompt for n items of kind, folding round
+// into a rotating theme. The rules (lowercase a-z only, one item per line,
+// no numbering/bullets/commentary) match what the old batch prompts asked
+// for; only the theme varies across rounds.
+func promptFor(kind Kind, n int, round int64) string {
+	theme := themes[int(round%int64(len(themes)))]
+
+	switch kind {
+	case KindWord:
+		return fmt.Sprintf(
+			"List %d common English words related to %s, for a touch-typing practice tool.\n"+
+				"Rules:\n"+
+				"- lowercase letters a-z only, no punctuation, no numbers, no apostrophes\n"+
+				"- one word per line\n"+
+				"- no numbering, no bullets, no extra commentary\n"+
+				"- no duplicate words\n",
+			n, theme,
+		)
+	default: // KindSentence
+		return fmt.Sprintf(
+			"Write %d short, simple English sentences about %s, for a touch-typing practice tool.\n"+
+				"Rules:\n"+
+				"- lowercase letters a-z and single spaces only; no punctuation, no numbers, no apostrophes\n"+
+				"- each sentence on its own line\n"+
+				"- no numbering, no bullets, no extra commentary\n"+
+				"- each sentence should have at least 4 words\n",
+			n, theme,
+		)
+	}
 }

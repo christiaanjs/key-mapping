@@ -1,92 +1,78 @@
 package corpus
 
 import (
-	"reflect"
+	"strings"
 	"testing"
 )
 
-// Note: these tests only exercise the pure parsing helpers. No live Ollama
-// server is contacted anywhere in this package's tests.
-
-const sampleLLMWordsResponse = `1. apple
-banana
- cherry
-Date!
-2. elderberry
-apple
-
-fig-newton
-GRAPE
-123
-kiwi.`
-
-func TestParseWordLines(t *testing.T) {
-	got := parseWordLines(sampleLLMWordsResponse)
-	want := []string{"apple", "banana", "cherry", "date", "elderberry", "fig", "grape", "kiwi"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseWordLines = %#v, want %#v", got, want)
-	}
-}
-
-const sampleLLMSentencesResponse = `1. the cat sat on the mat today
-The Cat Sat On The Mat Today!
-
-hi
-2. we walked to the store this morning
-short line here
-a bright sun rose over the quiet hills`
-
-func TestParseSentenceLines(t *testing.T) {
-	got := parseSentenceLines(sampleLLMSentencesResponse)
-	want := []string{
-		"the cat sat on the mat today",
-		"we walked to the store this morning",
-		"a bright sun rose over the quiet hills",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseSentenceLines = %#v, want %#v", got, want)
-	}
-	// "short line here" only has 3 words and must be filtered out by the
-	// >= 4 words rule.
-	for _, s := range got {
-		if s == "short line here" {
-			t.Errorf("expected the 3-word line to be filtered out, got %v", got)
-		}
-	}
-}
+// Note: these tests only exercise pure helpers (prompt building, defaults,
+// line cleaning). No live Ollama server is contacted anywhere in this
+// package's tests; see ollama_live_test.go for the opt-in live test.
 
 func TestOptionsWithDefaults(t *testing.T) {
 	o := Options{}.withDefaults()
 	if o.Model != defaultModel {
 		t.Errorf("Model = %q, want %q", o.Model, defaultModel)
 	}
-	if o.NumWords != defaultNumWords {
-		t.Errorf("NumWords = %d, want %d", o.NumWords, defaultNumWords)
-	}
-	if o.NumSentences != defaultNumSentences {
-		t.Errorf("NumSentences = %d, want %d", o.NumSentences, defaultNumSentences)
-	}
 
-	custom := Options{Model: "mistral", NumWords: 50, NumSentences: 5}.withDefaults()
-	if custom.Model != "mistral" || custom.NumWords != 50 || custom.NumSentences != 5 {
-		t.Errorf("withDefaults changed explicit values: %#v", custom)
+	custom := Options{Model: "mistral"}.withDefaults()
+	if custom.Model != "mistral" {
+		t.Errorf("withDefaults changed explicit Model: %#v", custom)
 	}
 }
 
-func TestPromptsMentionCounts(t *testing.T) {
-	if got := wordsPrompt(42); !contains(got, "42") {
-		t.Errorf("wordsPrompt(42) does not mention count: %q", got)
+func TestPromptForMentionsCountAndVariesByRound(t *testing.T) {
+	wordPrompt := promptFor(KindWord, 42, 0)
+	if !strings.Contains(wordPrompt, "42") {
+		t.Errorf("word prompt does not mention count: %q", wordPrompt)
 	}
-	if got := sentencesPrompt(7); !contains(got, "7") {
-		t.Errorf("sentencesPrompt(7) does not mention count: %q", got)
+	sentPrompt := promptFor(KindSentence, 7, 0)
+	if !strings.Contains(sentPrompt, "7") {
+		t.Errorf("sentence prompt does not mention count: %q", sentPrompt)
+	}
+
+	// Different rounds should (eventually) pick different themes so repeated
+	// calls don't regenerate the same list.
+	seenThemes := make(map[string]bool)
+	for round := int64(0); round < int64(len(themes)); round++ {
+		p := promptFor(KindWord, 10, round)
+		seenThemes[p] = true
+	}
+	if len(seenThemes) < 2 {
+		t.Errorf("expected prompts to vary across rounds, got %d distinct prompts over %d rounds", len(seenThemes), len(themes))
 	}
 }
 
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
+func TestEmitLineWord(t *testing.T) {
+	var got []string
+	emit := func(s string) { got = append(got, s) }
+
+	emitLine(KindWord, "1. Apple!", emit)
+	emitLine(KindWord, "", emit)
+	emitLine(KindWord, "123", emit)
+	emitLine(KindWord, "banana extra stuff", emit)
+
+	want := []string{"apple", "banana"}
+	if len(got) != len(want) {
+		t.Fatalf("emitLine(KindWord) = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("emitLine(KindWord)[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
-	return false
+}
+
+func TestEmitLineSentence(t *testing.T) {
+	var got []string
+	emit := func(s string) { got = append(got, s) }
+
+	emitLine(KindSentence, "The Cat Sat On The Mat!", emit)
+	emitLine(KindSentence, "hi there", emit) // too few words
+	emitLine(KindSentence, "", emit)
+
+	want := []string{"the cat sat on the mat"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("emitLine(KindSentence) = %#v, want %#v", got, want)
+	}
 }

@@ -69,6 +69,17 @@ func (c *staticCorpus) Word(length Length, seed int) string {
 	return pool[index]
 }
 
+// Status reports the static bank as a ready, fixed-size source. It never
+// warms up or fails, so the frontends render it as a plain label.
+func (c *staticCorpus) Status() CorpusStatus {
+	return CorpusStatus{
+		Source:    "static",
+		Phase:     CorpusReady,
+		Words:     len(c.words),
+		Sentences: len(c.sentences),
+	}
+}
+
 // Sentence returns a practice sentence, chosen by seed.
 // The selection is deterministic: same seed yields the same sentence.
 func (c *staticCorpus) Sentence(seed int) string {
