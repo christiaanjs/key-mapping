@@ -13,7 +13,7 @@ The current focus is a **left-hand-only layout** (Half-QWERTY: hold spacebar to 
 Phases 0–5 of `PLAN.md` are built: the pure `core` (now including the mapping parser), the terminal (TUI) frontend, the web (WASM) frontend, and the pluggable `corpus` package all work and are covered by CI. What each thing is:
 
 - `core/` — the pure trainer: `App` with `Dispatch(Event) State` / `Snapshot() State`, the four drill modes, the `Mapping` / `Corpus` **seam interfaces**, and `ParseMapping`.
-- `corpus/` — pluggable corpus sources (static, file, codebase, Ollama). All corpus I/O (os, net/http) lives here, **outside** the pure core.
+- `corpus/` — pluggable corpus sources: fixed banks (static, file, codebase) and a **streaming** `Stream` fed by a vendor-neutral `Producer` (Ollama today; Phase 7's Anthropic provider slots into the same seam). All corpus I/O (os, net/http) and all goroutines live here, **outside** the pure core.
 - `cmd/tui/` — Bubble Tea + Lip Gloss frontend. `cmd/web/` + `web/` — WASM entrypoint plus a thin vanilla-JS renderer (no framework/CDN/build step).
 - `trainer/architecture.md` — the architecture this follows. `trainer/index.html` — the original **throwaway prototype**; it is the behavior/visual reference only, do not extend it.
 - `mappings/qwerty-mirror/*.json` — the **real Karabiner mapping**; see the format section below. `mappings/mappings.go` embeds it as an `embed.FS` (wasm-safe) with `mappings.Default` = `"qwerty-mirror"`.
@@ -23,6 +23,15 @@ Phases 0–5 of `PLAN.md` are built: the pure `core` (now including the mapping 
 Remaining goals: Phase 6 (simulation/efficiency) and Phase 7 (LLM content generation, provider-flexible) — see `PLAN.md`.
 
 Key seams to preserve when extending: keep `core` pure (the parser takes an `fs.FS`, never `os`; corpus I/O stays in `corpus/`). The web frontend uses the parsed mapping + static corpus only — a browser sandbox can reach neither the filesystem nor a local Ollama server.
+
+### The Corpus contract (read before touching corpus code)
+
+**`Word`/`Sentence` are called on the frontend's event loop (Bubble Tea's `Update`, the browser's single JS thread) and must never block.** This is what lets a corpus that generates text over the network sit behind the same interface as a hardcoded list: `corpus.Stream` serves whatever is buffered (falling back to the static bank while cold) and fetches in the background, rather than making the UI wait. A corpus is *internally* concurrent; the `App` itself stays single-threaded and unlocked.
+
+Consequences worth knowing before changing `corpus/stream.go`:
+- A corpus reports progress by optionally implementing `core.StatusReporter`; the core surfaces it as `State.Corpus` so frontends can show that content is still arriving. The TUI ticks to re-render while it changes — Bubble Tea only redraws on messages, so background arrivals are otherwise invisible.
+- The producer must stay **demand-driven**: it sleeps unless woken by consumption or a backoff timer. Two things preserve that, and both have regression tests — a pending wake must not short-circuit a backoff window, and a round that succeeds but adds nothing new (a model repeating itself, deduped away by the ring) must back off exactly like a failure. Break either and an idle trainer regenerates forever at full GPU.
+- Reasoning models (qwen3, deepseek-r1) must have thinking disabled — they emit their chain-of-thought to `GenerateResponse.Thinking`, not `.Response`, and will churn for minutes producing no usable words. `ollamaProducer.noThink` resolves the capability from the server once; it is conditional because sending `think` to a model that lacks the capability is rejected.
 
 ## Target architecture (from `trainer/architecture.md`)
 
