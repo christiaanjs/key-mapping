@@ -18,9 +18,9 @@ import (
 )
 
 func main() {
-	corpusKind := flag.String("corpus", "static", `corpus source: "static", "file", "code", or "ollama"`)
+	corpusKind := flag.String("corpus", "auto", `corpus source: "auto" (Ollama if reachable, else static), "static", "file", "code", or "ollama"`)
 	corpusPath := flag.String("corpus-path", "", "path for -corpus=file (a text file) or -corpus=code (a directory root)")
-	ollamaModel := flag.String("ollama-model", "", "Ollama model to use with -corpus=ollama (empty uses the corpus package default)")
+	ollamaModel := flag.String("ollama-model", "", "Ollama model to use (empty: auto-pick one that is actually pulled)")
 	ollamaHost := flag.String("ollama-host", "", "Ollama host URL to use with -corpus=ollama (empty uses OLLAMA_HOST or the client default)")
 	ollamaTemp := flag.Float64("ollama-temperature", 0, "sampling temperature for -corpus=ollama (0 uses the corpus default; negative defers to the model's own)")
 	ollamaRepeat := flag.Float64("ollama-repeat-penalty", 0, "repetition penalty for -corpus=ollama (0 uses the corpus default; negative defers to the model's own)")
@@ -101,10 +101,28 @@ func buildCorpus(ctx context.Context, kind, path string, ollama corpus.Options) 
 		fmt.Fprintf(os.Stderr, "tui: using corpus: code (%s)\n", path)
 		return src
 
+	case "auto":
+		// Default. Use a live model when one is actually there, and say nothing
+		// louder than a note when there isn't — an absent Ollama is the normal
+		// case for most people, not an error worth warning about.
+		resolved, err := corpus.Detect(ctx, ollama)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "tui: using corpus: static (no Ollama detected: %v)\n", err)
+			return core.NewStaticCorpus()
+		}
+		src, err := corpus.FromOllama(ctx, resolved, core.NewStaticCorpus())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "tui: warning: failed to build ollama corpus: %v; falling back to static corpus\n", err)
+			return core.NewStaticCorpus()
+		}
+		fmt.Fprintf(os.Stderr, "tui: using corpus: ollama %s (streaming in the background)\n", resolved.Model)
+		return src
+
 	case "ollama":
-		// Only a malformed host fails here; an unreachable or slow server is a
-		// soft failure the stream reports through State.Corpus while the drill
-		// carries on against the static fallback.
+		// Explicitly requested: do NOT probe. If the server is down that is
+		// worth surfacing, not silently downgrading — the stream reports it as
+		// a failure through State.Corpus while the drill carries on against the
+		// static fallback. Only a malformed host fails here.
 		src, err := corpus.FromOllama(ctx, ollama, core.NewStaticCorpus())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "tui: warning: failed to build ollama corpus: %v; falling back to static corpus\n", err)

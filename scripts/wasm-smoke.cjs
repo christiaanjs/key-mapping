@@ -23,7 +23,14 @@ const WASM = path.join(ROOT, "web/app.wasm");
 const TIMEOUT_MS = 120000;
 
 const query = process.argv[2] || "";
-const wantsOllama = query.includes("corpus=ollama");
+
+// Which outcome this run demands. With no ?corpus= the page auto-detects, so
+// either outcome is legitimate and we only report what happened.
+const mode = /corpus=static/.test(query)
+  ? "static"
+  : /corpus=ollama/.test(query)
+    ? "ollama"
+    : "auto";
 
 // --- browser globals the module expects -------------------------------------
 
@@ -37,7 +44,11 @@ globalThis.location = { search: query };
 // non-configurable, and a Proxy is forbidden from lying about such a property.
 // Swapping in a clone is therefore the only way to exercise the same fetch path
 // a browser takes. Harness-only; nothing in the app depends on it.
-if (wantsOllama) {
+//
+// This is done unconditionally: without it the page's auto-detection could
+// never reach Ollama, so even the "no query param" run would be testing
+// something a browser never does.
+{
   const real = process;
   const fake = {};
   for (const key in real) {
@@ -74,12 +85,19 @@ WebAssembly.instantiate(fs.readFileSync(WASM), go.importObject).then((res) => {
         (c.detail ? `  detail=${c.detail}` : "")
     );
 
-    if (!wantsOllama) {
-      // The default page is a fixed bank: ready immediately, no generation.
+    if (mode === "static") {
+      // Forced static: a fixed bank, ready immediately, no generation.
       if (c.phase !== "ready" || c.source !== "static" || c.words === 0) {
         return fail(`expected a ready static bank, got ${JSON.stringify(c)}`);
       }
       console.log("\nOK: static bank serves immediately.");
+      return done(0);
+    }
+
+    if (mode === "auto" && c.phase === "ready" && c.source === "static") {
+      // Auto-detect found no usable Ollama and cleanly used the static bank.
+      // That is a correct outcome, not a failure — it is what most machines do.
+      console.log("\nOK: no Ollama detected; fell back to the static bank.");
       return done(0);
     }
 

@@ -41,17 +41,26 @@ const (
 	// round actually yields — which is what the corpus cares about, since the
 	// ring dedups and a round that adds nothing new triggers a backoff.
 	//
-	// Asking qwen3:8b for 60 words with its own declared parameters
-	// (temperature 0.6, repeat_penalty 1) returned 75 lines but only 30 distinct
-	// words — 60% duplicates. Raising temperature alone barely moved it (64%
-	// duplicates at 1.0): the model repeats itself not because sampling is too
-	// sharp but because nothing penalises repetition, and many models ship with
-	// repeat_penalty disabled. Adding repeat_penalty 1.2 took duplicates to 2%
-	// (50 distinct of 60 asked for).
+	// repeat_penalty is the lever that matters, not temperature. Many models —
+	// qwen3 among them — declare repeat_penalty 1, i.e. no repetition penalty at
+	// all, and then happily repeat themselves when asked for a long list. Raising
+	// temperature does not fix that.
 	//
-	// 1.2 is also about the ceiling: at 1.5 sentence yield halved, because the
-	// penalty starts suppressing the very words ordinary sentences need ("the",
-	// "a"). These two values are good for both kinds.
+	// Averaged over 3 runs against qwen3:8b at temperature 1.0, asking for 60
+	// words (single runs vary a lot, hence the averaging):
+	//
+	//	repeat_penalty   distinct words   duplicates
+	//	1.0 (off)                    57        33.5%
+	//	1.1                          76        21.6%
+	//	1.2                          82         2.6%   <- best
+	//	1.3                          63         0.5%
+	//
+	// 1.2 maximises distinct output while nearly eliminating duplicates; 1.3
+	// suppresses duplicates further but the model produces less overall. Higher
+	// still is actively harmful: a spot check at 1.5 cut sentence yield sharply,
+	// because the penalty starts suppressing the very words ordinary sentences
+	// are built from ("the", "a"). Sentence yield holds up at 1.2 (26-30 usable
+	// of 30 asked for), so one value serves both kinds.
 	defaultTemperature   = 1.0
 	defaultRepeatPenalty = 1.2
 )

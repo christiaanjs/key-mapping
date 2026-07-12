@@ -57,8 +57,9 @@ func main() {
 // buildCorpus selects the corpus from the page's query string — the browser's
 // equivalent of the TUI's flags, injected the same way at construction:
 //
-//	index.html                                     -> static bank (default)
-//	index.html?corpus=ollama                       -> stream from a local Ollama
+//	index.html                                     -> auto: Ollama if reachable, else static
+//	index.html?corpus=static                       -> force the static bank
+//	index.html?corpus=ollama                       -> force Ollama (report failure rather than downgrade)
 //	index.html?corpus=ollama&model=qwen3:8b        -> ...with a specific model
 //	index.html?corpus=ollama&host=http://host:1234 -> ...on a specific server
 //
@@ -76,19 +77,41 @@ func main() {
 func buildCorpus() core.Corpus {
 	q := queryParams()
 
-	if q.Get("corpus") != "ollama" {
+	kind := q.Get("corpus")
+	if kind == "" {
+		kind = "auto"
+	}
+	if kind == "static" {
 		return core.NewStaticCorpus()
+	}
+	if kind != "auto" && kind != "ollama" {
+		return core.NewStaticCorpus()
+	}
+
+	opts := corpus.Options{
+		Model:         q.Get("model"),
+		Host:          q.Get("host"),
+		Temperature:   floatParam(q, "temperature"),
+		RepeatPenalty: floatParam(q, "repeat-penalty"),
+	}
+
+	// In auto mode, only use Ollama if it is actually there with a usable
+	// model — a page opened with no Ollama running must not sit on a red
+	// "failed" status forever. Detect also resolves the model to one that is
+	// really pulled. Asking for it explicitly (?corpus=ollama) skips the probe,
+	// so a down server is reported rather than silently downgraded.
+	if kind == "auto" {
+		resolved, err := corpus.Detect(context.Background(), opts)
+		if err != nil {
+			return core.NewStaticCorpus()
+		}
+		opts = resolved
 	}
 
 	// The stream outlives this call, generating on a background goroutine for
 	// as long as the page is open; context.Background is right because the
 	// page's lifetime is the program's lifetime.
-	src, err := corpus.FromOllama(context.Background(), corpus.Options{
-		Model:         q.Get("model"),
-		Host:          q.Get("host"),
-		Temperature:   floatParam(q, "temperature"),
-		RepeatPenalty: floatParam(q, "repeat-penalty"),
-	}, core.NewStaticCorpus())
+	src, err := corpus.FromOllama(context.Background(), opts, core.NewStaticCorpus())
 	if err != nil {
 		// Only a malformed host reaches here. An unreachable server is a soft
 		// failure the Stream reports through State.Corpus, which the page

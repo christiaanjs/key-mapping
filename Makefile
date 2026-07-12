@@ -1,4 +1,4 @@
-.PHONY: build-tui build-web test vet smoke-web smoke-web-ollama serve-web
+.PHONY: build-tui build-web test vet smoke-web smoke-web-auto smoke-web-ollama serve-web
 
 # Native terminal binary.
 build-tui:
@@ -22,10 +22,16 @@ serve-web: build-web
 
 # Run the built wasm module outside a browser and assert it actually works.
 # `go build` only proves it compiles; this drives snapshot()/dispatch() for real.
+# Forces the static bank, so it needs nothing but node.
 smoke-web: build-web
+	node scripts/wasm-smoke.cjs "?corpus=static"
+
+# The default page: auto-detect. Passes either way — it reports whether it found
+# a live model or cleanly fell back to the static bank.
+smoke-web-auto: build-web
 	node scripts/wasm-smoke.cjs
 
-# Same, but against a live Ollama (needs a server + `ollama pull qwen3:8b`).
-# Asserts the browser build really streams generated text.
+# Force Ollama (needs a server + a pulled model). Asserts the browser build
+# really streams generated text.
 smoke-web-ollama: build-web
 	node scripts/wasm-smoke.cjs "?corpus=ollama&model=qwen3:8b"
