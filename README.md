@@ -84,6 +84,9 @@ Options:
 
 - `-ollama-model` — model name (default `llama3.2`); it must be pulled first (`ollama pull llama3.2`).
 - `-ollama-host` — server URL (default: `OLLAMA_HOST`, else `http://localhost:11434`).
+- `-ollama-temperature` (default `1.0`) and `-ollama-repeat-penalty` (default `1.2`) — sampling. `0` uses these defaults; a **negative** value sends nothing and defers to the model's own declared parameters.
+
+Those two defaults are measured, not guessed. What the corpus cares about is how many *distinct* usable items a round yields, because the buffer dedups and a round adding nothing new triggers a backoff. Asking `qwen3:8b` for 60 words under its own parameters (`temperature 0.6`, `repeat_penalty 1`) returned 75 lines but only **30 distinct** words — 60% duplicates. Raising temperature alone barely helped (64% duplicates at 1.0): the model repeats itself not because sampling is too sharp but because **nothing penalises repetition** — many models ship with `repeat_penalty` effectively disabled. Adding `repeat_penalty 1.2` cut duplicates to **2%**. Don't push it much further: at 1.5 sentence yield halved, because the penalty starts suppressing the very words ordinary sentences need ("the", "a").
 
 Content is **unbounded but memory is not**: words and sentences land in ring buffers (2000 / 500, oldest evicted), and the producer only wakes when the drill has actually consumed enough to need more — an idle trainer generates nothing, so it won't sit there burning your GPU. Reasoning models (qwen3, deepseek-r1, …) have thinking disabled automatically; otherwise they spend minutes emitting a chain-of-thought before producing a single usable word.
 
@@ -98,7 +101,10 @@ http://localhost:8000/                                  static bank (default)
 http://localhost:8000/?corpus=ollama                    stream from a local Ollama
 http://localhost:8000/?corpus=ollama&model=qwen3:8b     ...with a specific model
 http://localhost:8000/?corpus=ollama&host=http://…      ...on a specific server
+http://localhost:8000/?corpus=ollama&temperature=1.1    ...tuning sampling
 ```
+
+The same sampling knobs are available as `temperature` and `repeat-penalty` query params.
 
 The page shows the same status line, and starts instantly on static text while the model warms up. There is no `file`/`code` option — those need a filesystem the sandbox doesn't have.
 

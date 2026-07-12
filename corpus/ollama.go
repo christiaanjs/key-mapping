@@ -23,15 +23,66 @@ type Options struct {
 	// empty, the client is built from the OLLAMA_HOST environment variable
 	// (or its own default) via api.ClientFromEnvironment.
 	Host string
+
+	// Temperature and RepeatPenalty are the sampling options sent with every
+	// request. Zero means "use the package default" (see below); a NEGATIVE
+	// value means "send nothing and let the model's own parameters stand".
+	//
+	// Unlike thinking (see noThink), these need no capability check: Ollama
+	// accepts them for every completion model.
+	Temperature   float64
+	RepeatPenalty float64
 }
 
-const defaultModel = "llama3.2"
+const (
+	defaultModel = "llama3.2"
+
+	// Sampling defaults, chosen by measuring how many *distinct* usable items a
+	// round actually yields — which is what the corpus cares about, since the
+	// ring dedups and a round that adds nothing new triggers a backoff.
+	//
+	// Asking qwen3:8b for 60 words with its own declared parameters
+	// (temperature 0.6, repeat_penalty 1) returned 75 lines but only 30 distinct
+	// words — 60% duplicates. Raising temperature alone barely moved it (64%
+	// duplicates at 1.0): the model repeats itself not because sampling is too
+	// sharp but because nothing penalises repetition, and many models ship with
+	// repeat_penalty disabled. Adding repeat_penalty 1.2 took duplicates to 2%
+	// (50 distinct of 60 asked for).
+	//
+	// 1.2 is also about the ceiling: at 1.5 sentence yield halved, because the
+	// penalty starts suppressing the very words ordinary sentences need ("the",
+	// "a"). These two values are good for both kinds.
+	defaultTemperature   = 1.0
+	defaultRepeatPenalty = 1.2
+)
 
 func (o Options) withDefaults() Options {
 	if o.Model == "" {
 		o.Model = defaultModel
 	}
+	if o.Temperature == 0 {
+		o.Temperature = defaultTemperature
+	}
+	if o.RepeatPenalty == 0 {
+		o.RepeatPenalty = defaultRepeatPenalty
+	}
 	return o
+}
+
+// sampling builds the per-request options map. A negative value omits that
+// option, deferring to whatever the model declares for itself.
+func (o Options) sampling() map[string]any {
+	m := make(map[string]any, 2)
+	if o.Temperature >= 0 {
+		m["temperature"] = o.Temperature
+	}
+	if o.RepeatPenalty >= 0 {
+		m["repeat_penalty"] = o.RepeatPenalty
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // ollamaProducer is a Producer backed by a local Ollama server. Unlike the
@@ -39,8 +90,9 @@ func (o Options) withDefaults() Options {
 // emits lines as they complete rather than waiting for the whole thing, so
 // the Stream wrapping it can serve real content within a second or two.
 type ollamaProducer struct {
-	client *api.Client
-	model  string
+	client   *api.Client
+	model    string
+	sampling map[string]any // temperature / repeat_penalty; nil defers to the model
 
 	// round is folded into the prompt (via a rotating theme) so repeated
 	// Produce calls ask for different content instead of regenerating the
@@ -105,7 +157,11 @@ func NewOllama(opts Options) (Producer, error) {
 		return nil, fmt.Errorf("corpus: build ollama client: %w", err)
 	}
 
-	return &ollamaProducer{client: client, model: opts.Model}, nil
+	return &ollamaProducer{
+		client:   client,
+		model:    opts.Model,
+		sampling: opts.sampling(),
+	}, nil
 }
 
 // FromOllama is the convenience entrypoint frontends use: it builds an
@@ -135,9 +191,10 @@ func (p *ollamaProducer) Produce(ctx context.Context, kind Kind, n int, emit fun
 
 	var pending strings.Builder
 	req := &api.GenerateRequest{
-		Model:  p.model,
-		Prompt: prompt,
-		Think:  p.noThink(ctx),
+		Model:   p.model,
+		Prompt:  prompt,
+		Think:   p.noThink(ctx),
+		Options: p.sampling,
 	}
 
 	err := p.client.Generate(ctx, req, func(r api.GenerateResponse) error {

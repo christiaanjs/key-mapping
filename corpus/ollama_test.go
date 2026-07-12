@@ -19,6 +19,57 @@ func TestOptionsWithDefaults(t *testing.T) {
 	if custom.Model != "mistral" {
 		t.Errorf("withDefaults changed explicit Model: %#v", custom)
 	}
+
+	if o.Temperature != defaultTemperature || o.RepeatPenalty != defaultRepeatPenalty {
+		t.Errorf("sampling defaults = %v/%v, want %v/%v",
+			o.Temperature, o.RepeatPenalty, defaultTemperature, defaultRepeatPenalty)
+	}
+}
+
+// TestOptionsSampling pins the three-way meaning of a sampling field: unset
+// takes the corpus default, an explicit value is sent as-is, and a negative
+// value omits the option so the model's own declared parameters stand.
+func TestOptionsSampling(t *testing.T) {
+	tests := []struct {
+		name string
+		opts Options
+		want map[string]any
+	}{
+		{
+			name: "zero values take the corpus defaults",
+			opts: Options{},
+			want: map[string]any{"temperature": defaultTemperature, "repeat_penalty": defaultRepeatPenalty},
+		},
+		{
+			name: "explicit values are sent as-is",
+			opts: Options{Temperature: 0.2, RepeatPenalty: 1.4},
+			want: map[string]any{"temperature": 0.2, "repeat_penalty": 1.4},
+		},
+		{
+			name: "negative temperature defers to the model",
+			opts: Options{Temperature: -1},
+			want: map[string]any{"repeat_penalty": defaultRepeatPenalty},
+		},
+		{
+			name: "both negative sends no options at all",
+			opts: Options{Temperature: -1, RepeatPenalty: -1},
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.opts.withDefaults().sampling()
+			if len(got) != len(tt.want) {
+				t.Fatalf("sampling() = %v, want %v", got, tt.want)
+			}
+			for k, want := range tt.want {
+				if got[k] != want {
+					t.Errorf("sampling()[%q] = %v, want %v", k, got[k], want)
+				}
+			}
+		})
+	}
 }
 
 func TestPromptForMentionsCountAndVariesByRound(t *testing.T) {

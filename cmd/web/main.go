@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
 	"syscall/js"
 
@@ -83,8 +84,10 @@ func buildCorpus() core.Corpus {
 	// as long as the page is open; context.Background is right because the
 	// page's lifetime is the program's lifetime.
 	src, err := corpus.FromOllama(context.Background(), corpus.Options{
-		Model: q.Get("model"),
-		Host:  q.Get("host"),
+		Model:         q.Get("model"),
+		Host:          q.Get("host"),
+		Temperature:   floatParam(q, "temperature"),
+		RepeatPenalty: floatParam(q, "repeat-penalty"),
 	}, core.NewStaticCorpus())
 	if err != nil {
 		// Only a malformed host reaches here. An unreachable server is a soft
@@ -93,6 +96,17 @@ func buildCorpus() core.Corpus {
 		return core.NewStaticCorpus()
 	}
 	return src
+}
+
+// floatParam reads a numeric query parameter. An absent or unparseable value
+// yields 0, which corpus.Options reads as "use the default" — a typo in the URL
+// must not stop the trainer from starting.
+func floatParam(q url.Values, name string) float64 {
+	v, err := strconv.ParseFloat(q.Get(name), 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 // queryParams reads window.location.search. Anything unexpected — no location

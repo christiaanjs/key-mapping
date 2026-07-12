@@ -22,6 +22,8 @@ func main() {
 	corpusPath := flag.String("corpus-path", "", "path for -corpus=file (a text file) or -corpus=code (a directory root)")
 	ollamaModel := flag.String("ollama-model", "", "Ollama model to use with -corpus=ollama (empty uses the corpus package default)")
 	ollamaHost := flag.String("ollama-host", "", "Ollama host URL to use with -corpus=ollama (empty uses OLLAMA_HOST or the client default)")
+	ollamaTemp := flag.Float64("ollama-temperature", 0, "sampling temperature for -corpus=ollama (0 uses the corpus default; negative defers to the model's own)")
+	ollamaRepeat := flag.Float64("ollama-repeat-penalty", 0, "repetition penalty for -corpus=ollama (0 uses the corpus default; negative defers to the model's own)")
 	flag.Parse()
 
 	// A streaming corpus keeps a producer goroutine alive for the life of the
@@ -31,7 +33,12 @@ func main() {
 	defer cancel()
 
 	mapping := buildMapping()
-	corp := buildCorpus(ctx, *corpusKind, *corpusPath, *ollamaModel, *ollamaHost)
+	corp := buildCorpus(ctx, *corpusKind, *corpusPath, corpus.Options{
+		Model:         *ollamaModel,
+		Host:          *ollamaHost,
+		Temperature:   *ollamaTemp,
+		RepeatPenalty: *ollamaRepeat,
+	})
 
 	app := core.New(mapping, corp)
 
@@ -62,7 +69,7 @@ func buildMapping() core.Mapping {
 // in from the model on ctx's goroutine, serving static text until the first
 // items land. The TUI reports that live via State.Corpus, so a slow model shows
 // as "warming" rather than a frozen startup.
-func buildCorpus(ctx context.Context, kind, path, model, host string) core.Corpus {
+func buildCorpus(ctx context.Context, kind, path string, ollama corpus.Options) core.Corpus {
 	switch kind {
 	case "static":
 		fmt.Fprintln(os.Stderr, "tui: using corpus: static")
@@ -98,7 +105,7 @@ func buildCorpus(ctx context.Context, kind, path, model, host string) core.Corpu
 		// Only a malformed host fails here; an unreachable or slow server is a
 		// soft failure the stream reports through State.Corpus while the drill
 		// carries on against the static fallback.
-		src, err := corpus.FromOllama(ctx, corpus.Options{Model: model, Host: host}, core.NewStaticCorpus())
+		src, err := corpus.FromOllama(ctx, ollama, core.NewStaticCorpus())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "tui: warning: failed to build ollama corpus: %v; falling back to static corpus\n", err)
 			return core.NewStaticCorpus()
