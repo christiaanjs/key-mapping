@@ -71,6 +71,19 @@ const go = new Go();
 
 WebAssembly.instantiate(fs.readFileSync(WASM), go.importObject).then((res) => {
   go.run(res.instance); // Go blocks on select{} and never resolves — do not await
+
+  // The page calls snapshot() the instant go.run() returns, so this harness must
+  // too. go.run() returns as soon as Go blocks on ANYTHING async — so if main()
+  // does I/O before registering its JS globals, they are not there yet and the
+  // page dies with "window.snapshot is not a function". Waiting before the first
+  // call would hide exactly that bug (it did).
+  if (typeof globalThis.snapshot !== "function") {
+    return fail(
+      "snapshot() is not registered when go.run() returns — main() blocked on I/O " +
+        "before setting its JS globals; the page cannot boot"
+    );
+  }
+
   const started = Date.now();
   setTimeout(check, 1000);
 

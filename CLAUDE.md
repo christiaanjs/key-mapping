@@ -36,6 +36,14 @@ Consequences worth knowing before changing `corpus/stream.go`:
 - **Sampling is tuned for *distinct* output, and `repeat_penalty` matters far more than `temperature`.** The buffer dedups, so a round that adds nothing new is wasted (and backs off). Many models (qwen3 included) declare `repeat_penalty 1` — no penalty at all — and repeat themselves on long lists; temperature does not fix that. Averaged over 3 runs on `qwen3:8b` at temp 1.0, 60 words requested: penalty off → 57 distinct / 33.5% dupes; 1.1 → 76 / 21.6%; **1.2 → 82 / 2.6%**; 1.3 → 63 / 0.5% (fewer items overall). Hence the defaults (1.0 / 1.2). Do not raise it further — at 1.5 sentence yield drops sharply, since it suppresses the common words sentences are made of. **Single runs vary wildly** (the same setting gave 64 and 117 distinct on consecutive runs), so average before concluding anything here. Unlike `think`, these need no capability check: Ollama accepts them for every completion model.
 - **Each kind (words, sentences) gets its own producer goroutine.** This is load-bearing, not decoration. A `Produce` call runs to completion, and a model asked for a batch of words can stream for minutes (mostly duplicates that dedup discards). With one shared producer, sentences were starved for that entire time — observed live as sentences stuck at 0 for >2 minutes while words trickled in. Independent loops (each with its own ring, backoff and wake) mean neither kind blocks the other. The low-water marks double as the per-request batch size, so keep them small for the same reason.
 
+### NEVER do I/O in cmd/web's main() before registering the JS globals
+
+`go.run()` hands control back to the page the moment Go blocks on **anything** async. So if `main()` does a `fetch` (e.g. probing for Ollama) before `js.Global().Set("snapshot", ...)`, the page calls `snapshot()` before it exists and dies with **`window.snapshot is not a function`** — a dead page, not a slow one. This actually shipped, and `go build` was perfectly happy with it.
+
+The rule: **register `snapshot`/`dispatch` first, do all I/O behind them.** Anything that needs I/O to decide the corpus goes through `corpus.Deferred`, which serves the static bank immediately and swaps the real source in when it resolves (reporting `warming` meanwhile, so the frontends keep polling and notice the upgrade).
+
+`scripts/wasm-smoke.cjs` calls `snapshot()` *immediately* after `go.run()`, exactly as the page does, and fails if it is missing — a harness that waits first would hide this entire class of bug (it did). `web/app.js` also waits for the globals defensively, so a regression costs a slow boot rather than a blank page.
+
 ## The wasm build and Ollama (findings — don't re-derive these)
 
 The browser **can** stream from a local Ollama. Earlier docs claimed it couldn't; that was wrong. Three non-obvious things make it work, each of which cost real debugging:

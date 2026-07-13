@@ -29,16 +29,42 @@
     WebAssembly.instantiateStreaming(fetch("app.wasm"), go.importObject)
       .then((result) => {
         go.run(result.instance);
+        return waitForCore();
+      })
+      .then(() => {
         wireTabs();
         render(JSON.parse(window.snapshot()));
         startCorpusPolling();
       })
       .catch((err) => {
         stage.innerHTML =
-          '<p class="boot-msg">Failed to load app.wasm: ' + escapeHTML(String(err)) +
+          '<p class="boot-msg">Failed to start the trainer: ' + escapeHTML(String(err)) +
           '. If you opened this file directly (file://), serve the directory over HTTP instead ' +
           '(e.g. <code>python3 -m http.server</code> from web/), since instantiateStreaming requires it.</p>';
       });
+  }
+
+  // waitForCore resolves once the WASM module has registered its globals.
+  //
+  // go.run() returns as soon as Go blocks on anything — including any async work
+  // main() does before calling js.Global().Set(...). If that happens, snapshot()
+  // is not yet a function and the page dies on boot. The core is written to
+  // register its globals first and do all I/O behind them, so in practice this
+  // resolves on the first tick; this is a guard so that a regression there costs
+  // a slow boot rather than a blank page.
+  function waitForCore() {
+    const deadline = Date.now() + 10000;
+    return new Promise((resolve, reject) => {
+      (function poll() {
+        if (typeof window.snapshot === "function" && typeof window.dispatch === "function") {
+          return resolve();
+        }
+        if (Date.now() > deadline) {
+          return reject(new Error("the WASM module never registered snapshot()/dispatch()"));
+        }
+        setTimeout(poll, 20);
+      })();
+    });
   }
 
   // send an Event to the core and render the State it returns.

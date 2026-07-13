@@ -95,30 +95,45 @@ func buildCorpus() core.Corpus {
 		RepeatPenalty: floatParam(q, "repeat-penalty"),
 	}
 
-	// In auto mode, only use Ollama if it is actually there with a usable
-	// model — a page opened with no Ollama running must not sit on a red
-	// "failed" status forever. Detect also resolves the model to one that is
-	// really pulled. Asking for it explicitly (?corpus=ollama) skips the probe,
-	// so a down server is reported rather than silently downgraded.
-	if kind == "auto" {
-		resolved, err := corpus.Detect(context.Background(), opts)
+	// Explicitly requested: no probe, so nothing here blocks. FromOllama only
+	// builds a client and starts a goroutine. A down server is a soft failure
+	// the Stream reports through State.Corpus, which the page renders — so the
+	// user sees why they are on fallback text, rather than being silently
+	// downgraded.
+	if kind == "ollama" {
+		src, err := corpus.FromOllama(context.Background(), opts, core.NewStaticCorpus())
 		if err != nil {
-			return core.NewStaticCorpus()
+			return core.NewStaticCorpus() // only a malformed host reaches here
 		}
-		opts = resolved
+		return src
 	}
 
-	// The stream outlives this call, generating on a background goroutine for
-	// as long as the page is open; context.Background is right because the
-	// page's lifetime is the program's lifetime.
-	src, err := corpus.FromOllama(context.Background(), opts, core.NewStaticCorpus())
-	if err != nil {
-		// Only a malformed host reaches here. An unreachable server is a soft
-		// failure the Stream reports through State.Corpus, which the page
-		// renders — so the user sees why they are on fallback text.
-		return core.NewStaticCorpus()
-	}
-	return src
+	// Auto: only use Ollama if it is really there with a usable model, so a page
+	// opened with no Ollama running does not sit on a red "failed" status
+	// forever. Detect also resolves the model to one that is actually pulled.
+	//
+	// Detect does I/O, and it MUST NOT run before main registers snapshot() and
+	// dispatch() on the JS global: Go hands control back to the page the moment
+	// main blocks, so probing here would mean the page calls snapshot() before it
+	// exists ("window.snapshot is not a function") — a dead page, not a slow one.
+	// So return immediately with a Deferred serving static text, and resolve it
+	// on a goroutine. The page stays interactive throughout and upgrades in
+	// place, which is what it already does for streamed content anyway.
+	deferred := corpus.NewDeferred(core.NewStaticCorpus(), "ollama")
+	go func() {
+		resolved, err := corpus.Detect(context.Background(), opts)
+		if err != nil {
+			deferred.Abandon()
+			return
+		}
+		src, err := corpus.FromOllama(context.Background(), resolved, core.NewStaticCorpus())
+		if err != nil {
+			deferred.Abandon()
+			return
+		}
+		deferred.Resolve(src)
+	}()
+	return deferred
 }
 
 // floatParam reads a numeric query parameter. An absent or unparseable value
