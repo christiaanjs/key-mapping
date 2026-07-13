@@ -190,19 +190,21 @@ func TestStreamDemandDrivenRefill(t *testing.T) {
 
 	// Initial cold-start fill: one Produce call each for words and sentences.
 	waitFor(t, 2*time.Second, func() bool { return fp.callCount() >= 2 })
+	waitFor(t, 2*time.Second, func() bool { return s.Status().Words >= wordLowWater })
 	settled := fp.callCount()
 
-	// Plenty of backlog (well above the low-water mark): serving from it
-	// must not re-trigger the producer.
-	for i := 0; i < serveTopUpThreshold-1; i++ {
+	// The top-up threshold is one full pass through the bank, so drawing less
+	// than that must not re-trigger the producer.
+	bank := s.Status().Words
+	for i := 0; i < bank-1; i++ {
 		s.Word(core.LengthAny, i)
 	}
 	time.Sleep(100 * time.Millisecond) // give any (incorrect) extra call a chance to land
 	if got := fp.callCount(); got != settled {
-		t.Fatalf("Produce called again before threshold: calls = %d, want %d", got, settled)
+		t.Fatalf("Produce called again before a full pass through the bank: calls = %d, want %d", got, settled)
 	}
 
-	// One more serve crosses serveTopUpThreshold and must wake the producer.
+	// One more serve completes the pass and must wake the producer.
 	s.Word(core.LengthAny, 9999)
 	waitFor(t, 2*time.Second, func() bool { return fp.callCount() > settled })
 }
@@ -297,6 +299,43 @@ func TestStreamSlowWordsDoNotStarveSentences(t *testing.T) {
 
 	if got := s.Sentence(0); got == fallback.sentence {
 		t.Fatalf("Sentence still serving fallback text after sentences were generated")
+	}
+}
+
+// TestTopUpDueScalesWithBank pins the rule that a top-up is earned by one full
+// pass through whatever the bank holds, not by a fixed number of draws.
+//
+// The fixed count this replaced (100) was the reason skipping felt useless: the
+// sentence bank holds 20, so a user had to cycle it five times over — seeing
+// every sentence five times — before a single new one was generated.
+func TestTopUpDueScalesWithBank(t *testing.T) {
+	tests := []struct {
+		name   string
+		bank   int
+		serves int
+		want   bool
+	}{
+		{"small bank, part-way through a pass", 20, 19, false},
+		{"small bank, one full pass earns a top-up", 20, 20, true},
+		{"large bank needs proportionally more draws", 500, 100, false},
+		{"large bank, one full pass", 500, 500, true},
+		{"tiny bank does not re-trigger every draw", 2, 3, false},
+		{"tiny bank still tops up at the floor", 2, minServesBeforeTopUp, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newKindState(sentenceCap, sentenceLowWater)
+			for i := 0; i < tt.bank; i++ {
+				st.ring.add(fmt.Sprintf("item %d", i))
+			}
+			st.servesSinceTopUp = tt.serves
+
+			if got := st.topUpDue(); got != tt.want {
+				t.Errorf("bank=%d serves=%d: topUpDue() = %v, want %v",
+					tt.bank, tt.serves, got, tt.want)
+			}
+		})
 	}
 }
 

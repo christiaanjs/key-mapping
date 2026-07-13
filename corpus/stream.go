@@ -24,10 +24,19 @@ const (
 	wordLowWater     = 60
 	sentenceLowWater = 20
 
-	// Once above the low-water mark, top up again only after this many
-	// Word/Sentence calls have been served for that kind since its last top-up
-	// — demand-driven, not time-driven.
-	serveTopUpThreshold = 100
+	// Once above the low-water mark, a kind earns a top-up after the drill has
+	// drawn from it about as many times as it holds — i.e. one full pass through
+	// everything it has. Demand-driven, not time-driven.
+	//
+	// This scales with the bank rather than being a fixed count, and that matters:
+	// a flat threshold (it was 100) meant the 20-sentence bank had to be cycled
+	// FIVE times — every sentence seen five times over — before a single new one
+	// was generated. Skipping felt like it did nothing, because it did nothing.
+	// Tying it to the bank size also self-throttles: as the ring grows toward its
+	// cap, top-ups naturally become rarer.
+	//
+	// The floor stops a nearly-empty bank from re-triggering on every draw.
+	minServesBeforeTopUp = 10
 
 	minBackoff = 2 * time.Second
 	maxBackoff = 30 * time.Second
@@ -171,8 +180,7 @@ func (s *Stream) serve(kind Kind) (items []string, needsWake bool) {
 
 	st := s.state(kind)
 	st.servesSinceTopUp++
-	return st.ring.snapshot(),
-		st.ring.len() < st.lowWater || st.servesSinceTopUp >= serveTopUpThreshold
+	return st.ring.snapshot(), st.ring.len() < st.lowWater || st.topUpDue()
 }
 
 // Status reports the stream's phase and buffer sizes. See core.CorpusStatus.
@@ -281,10 +289,21 @@ func (s *Stream) need(kind Kind) int {
 	if deficit := st.lowWater - st.ring.len(); deficit > 0 {
 		return deficit
 	}
-	if st.servesSinceTopUp >= serveTopUpThreshold {
+	if st.topUpDue() {
 		return st.lowWater
 	}
 	return 0
+}
+
+// topUpDue reports whether the drill has drawn from this kind enough times since
+// its last top-up to have earned fresh material: roughly one full pass through
+// what it currently holds. Caller must hold Stream.mu.
+func (st *kindState) topUpDue() bool {
+	threshold := st.ring.len()
+	if threshold < minServesBeforeTopUp {
+		threshold = minServesBeforeTopUp
+	}
+	return st.servesSinceTopUp >= threshold
 }
 
 // produce runs one Produce call for kind and folds the result into phase and
