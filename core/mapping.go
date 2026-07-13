@@ -15,11 +15,11 @@ type KeyHint struct {
 // a character, and how to explain mistakes. It is the seam that decouples the
 // trainer from any concrete keymap source.
 //
-// The Phase-2 implementation (staticMapping, newStaticMapping) is hardcoded from
-// the prototype's MIRROR table and mappings/qwerty-mirror/*.json. A later phase
-// will add an implementation that parses Karabiner JSON from mappings/. The
-// drill and both frontends depend only on this interface, never on the concrete
-// type — that is what lets the real parser slot in unchanged.
+// staticMapping (newStaticMapping) is a hardcoded stand-in ported from the
+// prototype's MIRROR table; ParseMapping (mapping_parse.go) builds the same
+// shape of Mapping by parsing Karabiner JSON from mappings/. The drill and
+// both frontends depend only on this interface, never on either concrete
+// type — that is what let the real parser slot in unchanged.
 type Mapping interface {
 	// Hint returns how to produce the given output character. For an unmapped
 	// character it returns KeyHint{Mapped: false}.

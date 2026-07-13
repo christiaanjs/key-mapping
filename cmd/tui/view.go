@@ -39,10 +39,59 @@ func renderView(m model) string {
 	}
 
 	b.WriteString("\n\n")
+	b.WriteString(renderCorpusStatus(m.state.Corpus, m.tick))
+	b.WriteString("\n")
 	b.WriteString(renderHelp(m.state.Mode))
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// spinnerFrames animates the "still generating" state. Braille dots render on
+// any modern terminal and take one cell, so the status line never reflows.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// renderCorpusStatus shows where practice text is coming from and, crucially,
+// whether more of it is still arriving. A streaming corpus fills in the
+// background, so without this line the user would have no idea the trainer had
+// silently started them on fallback text — or that it had quietly upgraded.
+func renderCorpusStatus(cs core.CorpusStatus, tick int) string {
+	source := cs.Source
+	if source == "" {
+		source = "static"
+	}
+	prefix := styleMuted.Render("corpus: ")
+
+	switch cs.Phase {
+	case core.CorpusWarming:
+		spin := spinnerFrames[((tick%len(spinnerFrames))+len(spinnerFrames))%len(spinnerFrames)]
+		return prefix + styleAccent.Render(source) + " " + styleCurrent.Render(spin) +
+			styleMuted.Render(" generating"+detailSuffix(cs)+" — drilling on static text meanwhile")
+
+	case core.CorpusStreaming:
+		return prefix + styleAccent.Render(source) + " " + styleDone.Render("●") +
+			styleMuted.Render(fmt.Sprintf(" streaming%s — %d words, %d sentences so far",
+				detailSuffix(cs), cs.Words, cs.Sentences))
+
+	case core.CorpusFailed:
+		detail := cs.Detail
+		if detail == "" {
+			detail = "unavailable"
+		}
+		return prefix + styleDanger.Render(source+" failed") +
+			styleMuted.Render(" — drilling on static text; retrying. ("+detail+")")
+
+	default:
+		return prefix + styleMuted.Render(fmt.Sprintf("%s — %d words, %d sentences", source, cs.Words, cs.Sentences))
+	}
+}
+
+// detailSuffix parenthesizes the status detail (model name, error) when set.
+func detailSuffix(cs core.CorpusStatus) string {
+	if cs.Detail == "" {
+		return ""
+	}
+	return " (" + cs.Detail + ")"
 }
 
 func renderTabs(active core.Mode) string {

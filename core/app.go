@@ -114,6 +114,7 @@ func (a *App) Snapshot() State {
 		Mode:    a.mode,
 		Content: a.content,
 		Length:  a.length,
+		Corpus:  a.corpusStatus(),
 	}
 
 	switch a.mode {

@@ -10,16 +10,54 @@ The current focus is a **left-hand-only layout** (Half-QWERTY: hold spacebar to 
 
 ## Current state — read this first
 
-Phases 0, 2, 3, and 4 of `PLAN.md` are built: the pure `core`, the terminal (TUI) frontend, and the web (WASM) frontend all work and are covered by CI. What each thing is:
+Phases 0–5 of `PLAN.md` are built: the pure `core` (now including the mapping parser), the terminal (TUI) frontend, the web (WASM) frontend, and the pluggable `corpus` package all work and are covered by CI. What each thing is:
 
-- `core/` — the pure trainer: `App` with `Dispatch(Event) State` / `Snapshot() State`, the four drill modes, and the `Mapping` / `Corpus` **seam interfaces**.
+- `core/` — the pure trainer: `App` with `Dispatch(Event) State` / `Snapshot() State`, the four drill modes, the `Mapping` / `Corpus` **seam interfaces**, and `ParseMapping`.
+- `corpus/` — pluggable corpus sources: fixed banks (static, file, codebase) and a **streaming** `Stream` fed by a vendor-neutral `Producer` (Ollama today; Phase 7's Anthropic provider slots into the same seam). All corpus I/O (os, net/http) and all goroutines live here, **outside** the pure core.
 - `cmd/tui/` — Bubble Tea + Lip Gloss frontend. `cmd/web/` + `web/` — WASM entrypoint plus a thin vanilla-JS renderer (no framework/CDN/build step).
 - `trainer/architecture.md` — the architecture this follows. `trainer/index.html` — the original **throwaway prototype**; it is the behavior/visual reference only, do not extend it.
-- `mappings/qwerty-mirror/*.json` — the **real Karabiner mapping**; see the format section below.
+- `mappings/qwerty-mirror/*.json` — the **real Karabiner mapping**; see the format section below. `mappings/mappings.go` embeds it as an `embed.FS` (wasm-safe) with `mappings.Default` = `"qwerty-mirror"`.
 
-**The mapping and corpus are still hardcoded, on purpose, behind interfaces.** `core/mapping_static.go` (`staticMapping`, built from the prototype's MIRROR table + `mappings/*.json`) implements `Mapping`; `core/corpus_static.go` (`staticCorpus`, the prototype's word/sentence bank) implements `Corpus`. `New(m Mapping, c Corpus)` injects them; `NewDefault()` wires the static ones. The drill and both frontends depend only on the interfaces.
+**The mapping is now parsed; the corpus is pluggable — both still behind the same interfaces.** `core.ParseMapping(fsys fs.FS, dir string) (Mapping, error)` (`core/mapping_parse.go`) reads `mappings/*.json` and builds a `mirrorTable` (`core/mirror_table.go`) — the same type `NewStaticMapping()` (`core/mapping_static.go`) builds, so parsed and static behave identically by construction. `core/corpus_static.go` (`staticCorpus`) and `corpus.Source` (`corpus/*.go`) both implement `Corpus`. `New(m Mapping, c Corpus)` injects them; `NewDefault()` wires the static ones. Both frontends parse the embedded mapping and (TUI) select a corpus, each falling back to the static implementation with an stderr warning on error. The drill and both frontends still depend only on the interfaces.
 
-The central next goal (Phase 1): replace `staticMapping` with an implementation that **parses the mapping files** (`mappings/` is the source of truth) — it drops in behind the existing `Mapping` interface with no change to the drill or frontends. Same pattern for `Corpus` (codebase extraction / LLM generation) in later phases.
+Remaining goals: Phase 6 (simulation/efficiency) and Phase 7 (LLM content generation, provider-flexible) — see `PLAN.md`.
+
+Key seams to preserve when extending: keep `core` pure (the parser takes an `fs.FS`, never `os`; corpus I/O stays in `corpus/`). The web frontend has no file/codebase corpus (no filesystem in the sandbox), but it **does** stream from Ollama — see the wasm section below.
+
+### The Corpus contract (read before touching corpus code)
+
+**`Word`/`Sentence` are called on the frontend's event loop (Bubble Tea's `Update`, the browser's single JS thread) and must never block.** This is what lets a corpus that generates text over the network sit behind the same interface as a hardcoded list: `corpus.Stream` serves whatever is buffered (falling back to the static bank while cold) and fetches in the background, rather than making the UI wait. A corpus is *internally* concurrent; the `App` itself stays single-threaded and unlocked.
+
+Consequences worth knowing before changing `corpus/stream.go`:
+- A corpus reports progress by optionally implementing `core.StatusReporter`; the core surfaces it as `State.Corpus` so frontends can show that content is still arriving. The TUI ticks to re-render while it changes — Bubble Tea only redraws on messages, so background arrivals are otherwise invisible.
+- The producer must stay **demand-driven**: it sleeps unless woken by consumption or a backoff timer. Two things preserve that, and both have regression tests — a pending wake must not short-circuit a backoff window, and a round that succeeds but adds nothing new (a model repeating itself, deduped away by the ring) must back off exactly like a failure. Break either and an idle trainer regenerates forever at full GPU.
+- Reasoning models (qwen3, deepseek-r1) must have thinking disabled — they emit their chain-of-thought to `GenerateResponse.Thinking`, not `.Response`, and will churn for minutes producing no usable words. `ollamaProducer.noThink` resolves the capability from the server once; it is conditional because sending `think` to a model that lacks the capability is rejected.
+- **The default corpus is `auto`: Ollama when reachable, static otherwise** (`corpus.Detect`, both frontends). Two traps it exists to avoid: (1) the server may be up but the *package default model* (`llama3.2`) not pulled — Detect resolves the model against `client.List()` and picks one that actually exists, skipping embedding-only models; (2) it must never stall startup — an absent server refuses instantly, and `DetectTimeout` (2s) only bites on a server that listens but doesn't answer. `auto` degrades silently; an explicit `-corpus=ollama` / `?corpus=ollama` deliberately skips the probe so a down server is *reported*, not quietly downgraded.
+- **Sampling is tuned for *distinct* output, and `repeat_penalty` matters far more than `temperature`.** The buffer dedups, so a round that adds nothing new is wasted (and backs off). Many models (qwen3 included) declare `repeat_penalty 1` — no penalty at all — and repeat themselves on long lists; temperature does not fix that. Averaged over 3 runs on `qwen3:8b` at temp 1.0, 60 words requested: penalty off → 57 distinct / 33.5% dupes; 1.1 → 76 / 21.6%; **1.2 → 82 / 2.6%**; 1.3 → 63 / 0.5% (fewer items overall). Hence the defaults (1.0 / 1.2). Do not raise it further — at 1.5 sentence yield drops sharply, since it suppresses the common words sentences are made of. **Single runs vary wildly** (the same setting gave 64 and 117 distinct on consecutive runs), so average before concluding anything here. Unlike `think`, these need no capability check: Ollama accepts them for every completion model.
+- **The top-up trigger scales with the bank (`kindState.topUpDue`), it is not a fixed count.** A kind earns a refill once the drill has drawn from it about as many times as it holds — one full pass. It was a flat 100 draws, which meant the 20-sentence bank had to be cycled *five times* (every sentence seen five times) before one new sentence appeared: skipping felt like it did nothing, because it did nothing. Tying it to the bank size also self-throttles, since top-ups get rarer as the ring grows. Note a kind is only drawn from in the mode using it, so the sentence bank does not grow while you drill words — that is correct, not a bug.
+- **Each kind (words, sentences) gets its own producer goroutine.** This is load-bearing, not decoration. A `Produce` call runs to completion, and a model asked for a batch of words can stream for minutes (mostly duplicates that dedup discards). With one shared producer, sentences were starved for that entire time — observed live as sentences stuck at 0 for >2 minutes while words trickled in. Independent loops (each with its own ring, backoff and wake) mean neither kind blocks the other. The low-water marks double as the per-request batch size, so keep them small for the same reason.
+
+### NEVER do I/O in cmd/web's main() before registering the JS globals
+
+`go.run()` hands control back to the page the moment Go blocks on **anything** async. So if `main()` does a `fetch` (e.g. probing for Ollama) before `js.Global().Set("snapshot", ...)`, the page calls `snapshot()` before it exists and dies with **`window.snapshot is not a function`** — a dead page, not a slow one. This actually shipped, and `go build` was perfectly happy with it.
+
+The rule: **register `snapshot`/`dispatch` first, do all I/O behind them.** Anything that needs I/O to decide the corpus goes through `corpus.Deferred`, which serves the static bank immediately and swaps the real source in when it resolves (reporting `warming` meanwhile, so the frontends keep polling and notice the upgrade).
+
+`scripts/wasm-smoke.cjs` calls `snapshot()` *immediately* after `go.run()`, exactly as the page does, and fails if it is missing — a harness that waits first would hide this entire class of bug (it did). `web/app.js` also waits for the globals defensively, so a regression costs a slow boot rather than a blank page.
+
+## The wasm build and Ollama (findings — don't re-derive these)
+
+The browser **can** stream from a local Ollama. Earlier docs claimed it couldn't; that was wrong. Three non-obvious things make it work, each of which cost real debugging:
+
+1. **CORS is not a problem.** Ollama's default policy allows `localhost` origins, so a page on `http://localhost:8000` may call `http://localhost:11434` directly (verified with a preflight). It must be served over HTTP from localhost: `file://` is origin `null`, which Ollama rejects.
+
+2. **`http.DefaultClient` silently cannot reach the network under `GOOS=js`.** `net/http` only routes through the browser's `fetch()` when the Transport has *no* dial hooks; if `Dial`/`DialContext`/... is set it honours that and dials, landing in Go's in-process **fake network**, where localhost always fails with "connection refused". `http.DefaultTransport` *does* set `DialContext`. Hence `corpus/ollama_client_wasm.go`, which hands the client a zero-value `&http.Transport{}` — that, and only that, is what makes the request go out over fetch. (See `net/http/roundtrip_js.go`.)
+
+3. **Node deliberately disables fetch**, so it cannot verify the above by default: Go sets `jsFetchDisabled` when it detects Node (via `process.argv0`, go.dev/issue/57613) and falls back to the same fake network. `scripts/wasm-smoke.cjs` works around it by swapping in a cloned `process` — `argv0` is read-only *and* non-configurable, and a `Proxy` may not lie about such a property, so a clone is the only way.
+
+`make smoke-web` / `make smoke-web-ollama` run that harness. Prefer them over trusting `go build ./cmd/web`: compiling proves nothing about whether the browser can actually talk to the model — finding (2) compiled perfectly and was completely broken.
+
+**Known cost, accepted:** importing the official Ollama client into the wasm build takes `web/app.wasm` from ~3.6 MB to ~12 MB (1.0 → 3.2 MB gzipped). The bulk is dead weight in a browser — `ollama/auth` pulls in `golang.org/x/crypto/ssh` (blowfish, curve25519, poly1305), plus `crypto/tls`, `crypto/x509`, `log/slog`, `regexp`. Fine for local single-user use. If it ever matters, the fix is a lean wasm-only `Producer` that speaks `/api/generate` over plain HTTP+JSON, behind the same build tag as `ollama_client_wasm.go` — no change to `Stream` or anything above it.
 
 ## Target architecture (from `trainer/architecture.md`)
 

@@ -314,3 +314,38 @@ textarea.capture {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* ---- corpus status ----
+   A streaming corpus fills in the background, so this line is the only signal
+   that the text being drilled is still the static fallback, that generation
+   has taken over, or that the model is unreachable. Without it, a slow model
+   is indistinguishable from a hung page. */
+
+.corpus-status {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 14px;
+  min-height: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.corpus-status .cs-source {
+  color: var(--text-accent);
+}
+
+.corpus-status .cs-spinner {
+  color: var(--text-accent);
+  display: inline-block;
+  width: 1ch; /* fixed width so the line never reflows as the frame changes */
+}
+
+.corpus-status .cs-live {
+  color: var(--text-success);
+}
+
+.corpus-status .cs-failed {
+  color: var(--text-danger);
+}

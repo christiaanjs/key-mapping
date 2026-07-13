@@ -10,12 +10,17 @@
   "use strict";
 
   const stage = document.getElementById("stage");
+  const corpusEl = document.getElementById("corpus-status");
   const tabButtons = Array.from(document.querySelectorAll(".tabbtn"));
 
   const ARROW_GLYPH = { left: "←", down: "↓", up: "↑", right: "→" };
   const ARROW_KEYS = { ArrowLeft: "left", ArrowDown: "down", ArrowUp: "up", ArrowRight: "right" };
 
+  const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  const CORPUS_POLL_MS = 300;
+
   let current = null; // last rendered State, for tab highlighting etc.
+  let spinnerTick = 0;
 
   // ---- WASM boot ----
 
@@ -24,15 +29,42 @@
     WebAssembly.instantiateStreaming(fetch("app.wasm"), go.importObject)
       .then((result) => {
         go.run(result.instance);
+        return waitForCore();
+      })
+      .then(() => {
         wireTabs();
         render(JSON.parse(window.snapshot()));
+        startCorpusPolling();
       })
       .catch((err) => {
         stage.innerHTML =
-          '<p class="boot-msg">Failed to load app.wasm: ' + escapeHTML(String(err)) +
+          '<p class="boot-msg">Failed to start the trainer: ' + escapeHTML(String(err)) +
           '. If you opened this file directly (file://), serve the directory over HTTP instead ' +
           '(e.g. <code>python3 -m http.server</code> from web/), since instantiateStreaming requires it.</p>';
       });
+  }
+
+  // waitForCore resolves once the WASM module has registered its globals.
+  //
+  // go.run() returns as soon as Go blocks on anything — including any async work
+  // main() does before calling js.Global().Set(...). If that happens, snapshot()
+  // is not yet a function and the page dies on boot. The core is written to
+  // register its globals first and do all I/O behind them, so in practice this
+  // resolves on the first tick; this is a guard so that a regression there costs
+  // a slow boot rather than a blank page.
+  function waitForCore() {
+    const deadline = Date.now() + 10000;
+    return new Promise((resolve, reject) => {
+      (function poll() {
+        if (typeof window.snapshot === "function" && typeof window.dispatch === "function") {
+          return resolve();
+        }
+        if (Date.now() > deadline) {
+          return reject(new Error("the WASM module never registered snapshot()/dispatch()"));
+        }
+        setTimeout(poll, 20);
+      })();
+    });
   }
 
   // send an Event to the core and render the State it returns.
@@ -61,6 +93,7 @@
   function render(state) {
     current = state;
     highlightTabs(state.mode);
+    renderCorpusStatus(state.corpus);
     switch (state.mode) {
       case "mirror":
         renderMirror(state);
@@ -77,6 +110,84 @@
       default:
         stage.innerHTML = "";
     }
+  }
+
+  // ---- corpus status ----
+  //
+  // A streaming corpus (index.html?corpus=ollama) fills on a background
+  // goroutine inside the WASM module. Nothing dispatches an event when text
+  // arrives, so the page has to ask: poll snapshot() and repaint this one line.
+  //
+  // Crucially the poll repaints ONLY the status node, never the stage. The
+  // stage owns the capture <input> the user is typing into — rebuilding it
+  // every 300ms would destroy and recreate that element mid-keystroke, losing
+  // focus and dropping input. Nothing else in the state can change without an
+  // event, so there is nothing else to repaint.
+
+  function renderCorpusStatus(cs) {
+    if (!corpusEl) return;
+    if (!cs || !cs.phase) {
+      corpusEl.innerHTML = "";
+      return;
+    }
+
+    const source = escapeHTML(cs.source || "static");
+    const detail = cs.detail ? " (" + escapeHTML(cs.detail) + ")" : "";
+
+    switch (cs.phase) {
+      case "warming":
+        corpusEl.innerHTML =
+          "corpus: <span class='cs-source'>" + source + "</span>" +
+          "<span class='cs-spinner'>" + SPINNER[spinnerTick % SPINNER.length] + "</span>" +
+          "generating" + detail + " — drilling on static text meanwhile";
+        break;
+
+      case "streaming":
+        corpusEl.innerHTML =
+          "corpus: <span class='cs-source'>" + source + "</span> " +
+          "<span class='cs-live'>●</span> streaming" + detail + " — " +
+          cs.words + " words, " + cs.sentences + " sentences so far";
+        break;
+
+      case "failed":
+        corpusEl.innerHTML =
+          "corpus: <span class='cs-failed'>" + source + " failed</span>" +
+          " — drilling on static text; retrying." + detail;
+        break;
+
+      default: // "ready" — a fixed bank
+        corpusEl.innerHTML =
+          "corpus: " + source + " — " + cs.words + " words, " + cs.sentences + " sentences";
+    }
+  }
+
+  // startCorpusPolling repaints the status line while the corpus can still
+  // change. A fixed bank ("ready") is final, so the default static page never
+  // sets up a timer at all.
+  function startCorpusPolling() {
+    if (settled(current)) return;
+
+    const timer = setInterval(() => {
+      spinnerTick++;
+      let state;
+      try {
+        state = JSON.parse(window.snapshot());
+      } catch (_) {
+        clearInterval(timer);
+        return;
+      }
+      if (current) current.corpus = state.corpus;
+      renderCorpusStatus(state.corpus);
+
+      // "failed" is NOT settled: the stream backs off and retries, and may
+      // recover into "streaming" — which the user would never see if we
+      // stopped looking.
+      if (settled(state)) clearInterval(timer);
+    }, CORPUS_POLL_MS);
+  }
+
+  function settled(state) {
+    return !!state && !!state.corpus && state.corpus.phase === "ready";
   }
 
   // ---- mirror mode ----

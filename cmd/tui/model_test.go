@@ -13,7 +13,7 @@ import (
 // View() rendering, to guard against panics on startup/basic use. It does not
 // attempt to drive the program interactively.
 func TestSanity(t *testing.T) {
-	m := newModel()
+	m := newModel(core.NewDefault())
 	if v := m.View(); !strings.Contains(v, "Mirror typing") {
 		t.Fatalf("initial view missing tab bar: %q", v)
 	}

@@ -69,6 +69,17 @@ func (c *staticCorpus) Word(length Length, seed int) string {
 	return pool[index]
 }
 
+// Status reports the static bank as a ready, fixed-size source. It never
+// warms up or fails, so the frontends render it as a plain label.
+func (c *staticCorpus) Status() CorpusStatus {
+	return CorpusStatus{
+		Source:    "static",
+		Phase:     CorpusReady,
+		Words:     len(c.words),
+		Sentences: len(c.sentences),
+	}
+}
+
 // Sentence returns a practice sentence, chosen by seed.
 // The selection is deterministic: same seed yields the same sentence.
 func (c *staticCorpus) Sentence(seed int) string {
@@ -81,6 +92,10 @@ func (c *staticCorpus) Sentence(seed int) string {
 }
 
 // newStaticCorpus returns a new Corpus backed by the hardcoded word and sentence bank.
+// NewStaticCorpus returns the hardcoded corpus. It is exported so frontends can
+// use it directly or fall back to it when another Corpus source is unavailable.
+func NewStaticCorpus() Corpus { return newStaticCorpus() }
+
 func newStaticCorpus() Corpus {
 	// Raw word string, space-separated, copied verbatim from prototype
 	rawWords := "the be to of and a in that have it for not on with he as you do at this but his by from they we say her she or an will my one all would there their what so up out if about who get which go me when make can like time no just him know take people into year your good some could them see other than then now look only come over think back after use two how work first well way even want because these give day most water long very find here thing great little world still hand high right small large next early young important few public bad same able story mind party music course between country problem hour game line end member law car city community name president team minute idea body information nothing money result change morning reason research girl guy moment air teacher force education plan door number wall paper number able wide door left home moment food heart night true friend fact street table light front rather learn need feel become leave nature better school white house sound wind field paint drink dance simple happy quiet build sleep table plant water river green brown black round sharp smart clean quick brave clear fresh sweet bread cream stone metal glass color voice space light music dream heart peace world value trust honor pride craft skill trade grade grace price prize drive alive olive plane plate stage stone smoke flame frame shade share stare spare spice slice pride bride guide slide glide chase phase phrase praise"
