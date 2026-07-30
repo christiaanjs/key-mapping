@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Keymap Trainer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <h1>Keymap Trainer</h1>
+    <p class="subtitle">Half-QWERTY passthrough trainer — runs entirely in your browser (WebAssembly, no server).</p>
+
+    <div class="tabs" role="tablist">
+      <button id="tab-mirror" class="tabbtn" data-mode="mirror">Mirror typing</button>
+      <button id="tab-nav" class="tabbtn" data-mode="nav">Nav layer</button>
+      <button id="tab-scratch" class="tabbtn" data-mode="scratch">Scratchpad</button>
+      <button id="tab-reference" class="tabbtn" data-mode="reference">Reference</button>
+    </div>
+
+    <div id="stage">
+      <p class="boot-msg">Loading WebAssembly runtime…</p>
+    </div>
+  </div>
+
+  <script src="wasm_exec.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt (check formatting)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build (native)
+        run: go build ./...
+
+      - name: Build (wasm web target)
+        # -o is required: a bare `go build ./cmd/web` emits a binary named "web",
+        # which collides with the existing web/ assets directory.
+        run: GOOS=js GOARCH=wasm go build -o web/app.wasm ./cmd/web
+
+      - name: Test
+        run: go test ./...
